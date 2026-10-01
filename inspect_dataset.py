@@ -14,12 +14,17 @@ ISO_LEVEL = 0.5
 
 
 def load_dataset():
+    """Return (volumes, iso_level). Prefers the smooth signed distance field."""
     if not DATA_PATH.exists():
         raise FileNotFoundError(f"Could not find {DATA_PATH}. Run generate_dataset.py first.")
-    structures = np.load(DATA_PATH)["structures"]
-    if structures.ndim != 5 or structures.shape[-1] != 1:
-        raise ValueError(f"Expected shape (N, X, Y, Z, 1), got {structures.shape}")
-    return structures
+    data = np.load(DATA_PATH)
+    if "sdf" in data.files:
+        volumes, iso = data["sdf"], 0.0
+    else:
+        volumes, iso = data["structures"], ISO_LEVEL
+    if volumes.ndim != 5 or volumes.shape[-1] != 1:
+        raise ValueError(f"Expected shape (N, X, Y, Z, 1), got {volumes.shape}")
+    return volumes, iso
 
 
 def load_metadata():
@@ -67,17 +72,21 @@ def short_description(record):
         if key in record:
             value = record[key]
             parts.append(f"{key}={value}")
+    metrics = record.get("metrics", {})
+    for key, short in (("water_retention", "water"), ("crevice_fraction", "crevice")):
+        if key in metrics:
+            parts.append(f"{short}={metrics[key]:.3f}")
     return " | ".join(parts)
 
 
-def render_sample(ax, volume):
+def render_sample(ax, volume, iso=ISO_LEVEL):
     volume = np.asarray(volume, dtype=np.float32)
-    if volume.max() < ISO_LEVEL:
+    if volume.max() <= iso or volume.min() >= iso:
         ax.text2D(0.5, 0.5, "EMPTY", transform=ax.transAxes,
                   ha="center", va="center")
         return
 
-    verts, faces, _, _ = marching_cubes(volume, level=ISO_LEVEL)
+    verts, faces, _, _ = marching_cubes(volume, level=iso)
     mesh = Poly3DCollection(verts[faces], alpha=0.80)
     ax.add_collection3d(mesh)
 
@@ -88,7 +97,7 @@ def render_sample(ax, volume):
 
 
 def main():
-    structures = load_dataset()
+    structures, iso = load_dataset()
     metadata_lookup = metadata_by_id(load_metadata())
 
     n_total = structures.shape[0]
@@ -110,12 +119,12 @@ def main():
     for plot_number, index in enumerate(indices):
         ax = fig.add_subplot(n_rows, n_cols, plot_number + 1, projection="3d")
         volume = structures[index, ..., 0]
-        render_sample(ax, volume)
+        render_sample(ax, volume, iso)
 
         record = metadata_lookup.get(int(index), {})
         label = phenomenon_label(record)
         details = short_description(record)
-        occupancy = float(np.mean(volume > ISO_LEVEL))
+        occupancy = float(np.mean(volume > iso))
 
         title = f"#{index}  {label}\noccupancy={occupancy:.2f}"
         if details:

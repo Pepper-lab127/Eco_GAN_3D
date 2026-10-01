@@ -1,9 +1,14 @@
+import argparse
 import json
 import os
+from multiprocessing import Pool
 
 import numpy as np
+from scipy import ndimage
 from tqdm import tqdm
+
 from config import CONFIG
+from ecology_metrics import METRIC_NAMES, compute_metrics
 
 
 # Dataset V3.3.1
@@ -1229,30 +1234,38 @@ def valid(volume, phenomenon):
     }
 
 
-def main():
-    os.makedirs(
-        "data",
-        exist_ok=True,
+def to_tsdf(volume, truncation, smoothing):
+    """
+    Truncated signed distance field in [-1, 1], positive inside material.
+
+    The surface sits at 0, half a voxel from the centres of the boundary
+    voxels, so marching cubes at level 0 reproduces the binary surface.
+    A light Gaussian on the distance field rounds voxel stair-steps.
+    """
+    inside = ndimage.distance_transform_edt(volume)
+    outside = ndimage.distance_transform_edt(~volume)
+
+    signed = np.where(
+        volume,
+        inside - 0.5,
+        -(outside - 0.5),
+    ).astype(np.float32)
+
+    if smoothing > 0:
+        signed = ndimage.gaussian_filter(
+            signed,
+            smoothing,
+        )
+
+    return np.clip(
+        signed / truncation,
+        -1.0,
+        1.0,
     )
 
-    resolution = int(
-        CONFIG.resolution
-    )
 
-    dataset_size = int(
-        CONFIG.dataset_size
-    )
-
-    X, Y, Z = grid(
-        resolution
-    )
-
-    master = np.random.default_rng(
-        int(CONFIG.seed)
-    )
-
-    # Approximately 70% single-phenomenon examples,
-    # 30% hybrids, as in the previous dataset design.
+def build_labels(dataset_size, rng):
+    """About 70% single-phenomenon samples, 30% hybrids."""
     single_count = int(
         round(dataset_size * 0.70)
     )
@@ -1273,111 +1286,246 @@ def main():
         - single_count
     )
 
-    master.shuffle(labels)
+    rng.shuffle(labels)
 
-    data = np.zeros(
-        (
-            dataset_size,
-            resolution,
-            resolution,
-            resolution,
-            1,
+    return labels
+
+
+_GRID = None
+
+
+def _init_worker(resolution):
+    global _GRID
+    _GRID = grid(resolution)
+
+
+def make_sample(job):
+    """Generate, validate and describe one sample. Runs in a worker."""
+    index, phenomenon, seed = job
+    X, Y, Z = _GRID
+
+    last_validation = None
+
+    for attempt in range(100):
+        rng = np.random.default_rng(
+            seed + attempt
+        )
+
+        if phenomenon == "hybridization":
+            volume, parameters = hybrid(
+                X,
+                Y,
+                Z,
+                rng,
+            )
+        else:
+            volume, parameters = GENERATORS[
+                phenomenon
+            ](
+                X,
+                Y,
+                Z,
+                rng,
+            )
+
+        ok, validation = valid(
+            volume,
+            phenomenon,
+        )
+
+        last_validation = validation
+
+        if ok:
+            break
+    else:
+        raise RuntimeError(
+            "Could not generate a valid sample after 100 attempts. "
+            f"Sample={index}, phenomenon={phenomenon}, "
+            f"last_validation={last_validation}"
+        )
+
+    volume = volume.astype(bool)
+
+    sdf = to_tsdf(
+        volume,
+        CONFIG.tsdf_truncation,
+        CONFIG.tsdf_smoothing,
+    )
+
+    metrics = compute_metrics(volume)
+
+    record = {
+        "id": index,
+        "seed": seed,
+        "attempt": attempt,
+        "phenomenon": phenomenon,
+        "phenomena": parameters.get(
+            "phenomena",
+            [phenomenon],
         ),
+        "parameters": parameters,
+        "validation": validation,
+        "metrics": metrics,
+    }
+
+    return index, volume, sdf, record
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate the procedural ecological morphology dataset."
+    )
+
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=CONFIG.dataset_size,
+    )
+
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=CONFIG.resolution,
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=CONFIG.seed,
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 2) - 1),
+        help="Parallel processes (1 = no multiprocessing)",
+    )
+
+    parser.add_argument(
+        "--output",
+        default=CONFIG.dataset_path,
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    os.makedirs(
+        os.path.dirname(args.output) or ".",
+        exist_ok=True,
+    )
+
+    resolution = int(args.resolution)
+    dataset_size = int(args.count)
+
+    master = np.random.default_rng(
+        int(args.seed)
+    )
+
+    labels = build_labels(
+        dataset_size,
+        master,
+    )
+
+    jobs = [
+        (
+            index,
+            phenomenon,
+            int(master.integers(0, 2**32 - 1)),
+        )
+        for index, phenomenon in enumerate(labels)
+    ]
+
+    structures = np.zeros(
+        (dataset_size, resolution, resolution, resolution, 1),
+        dtype=np.uint8,
+    )
+
+    sdf = np.zeros(
+        (dataset_size, resolution, resolution, resolution, 1),
+        dtype=np.float16,
+    )
+
+    metadata = [None] * dataset_size
+
+    progress = tqdm(
+        total=dataset_size,
+        desc="Generating ecological morphology dataset",
+    )
+
+    def collect(result):
+        index, volume, field, record = result
+        structures[index, ..., 0] = volume
+        sdf[index, ..., 0] = field
+        metadata[index] = record
+        progress.update(1)
+
+    if args.workers <= 1:
+        _init_worker(resolution)
+
+        for job in jobs:
+            collect(make_sample(job))
+    else:
+        with Pool(
+            args.workers,
+            initializer=_init_worker,
+            initargs=(resolution,),
+        ) as pool:
+            for result in pool.imap_unordered(
+                make_sample,
+                jobs,
+                chunksize=8,
+            ):
+                collect(result)
+
+    progress.close()
+
+    # Multi-hot phenomenon labels: hybrids switch on every process used.
+    phenomenon_labels = np.zeros(
+        (dataset_size, len(PHENOMENA)),
         dtype=np.float32,
     )
 
-    metadata = []
+    for record in metadata:
+        for name in record["phenomena"]:
+            phenomenon_labels[
+                record["id"],
+                PHENOMENA.index(name),
+            ] = 1.0
 
-    for index, phenomenon in enumerate(
-        tqdm(
-            labels,
-            desc="Generating morphology-first dataset",
+    metric_arrays = {
+        f"metric_{name}": np.array(
+            [record["metrics"][name] for record in metadata],
+            dtype=np.float32,
         )
-    ):
-        seed = int(
-            master.integers(
-                0,
-                2**32 - 1,
-            )
-        )
+        for name in METRIC_NAMES
+    }
 
-        accepted = False
-        last_validation = None
-
-        for attempt in range(100):
-            rng = np.random.default_rng(
-                seed + attempt
-            )
-
-            if phenomenon == "hybridization":
-                volume, parameters = hybrid(
-                    X,
-                    Y,
-                    Z,
-                    rng,
-                )
-            else:
-                volume, parameters = GENERATORS[
-                    phenomenon
-                ](
-                    X,
-                    Y,
-                    Z,
-                    rng,
-                )
-
-            ok, validation = valid(
-                volume,
-                phenomenon,
-            )
-
-            last_validation = validation
-
-            if ok:
-                accepted = True
-                break
-
-        if not accepted:
-            raise RuntimeError(
-                "Could not generate a valid sample after 100 attempts. "
-                f"Sample={index}, phenomenon={phenomenon}, "
-                f"last_validation={last_validation}"
-            )
-
-        data[
-            index,
-            ...,
-            0,
-        ] = volume.astype(
-            np.float32
-        )
-
-        validation[
-            "validation_exhausted"
-        ] = False
-
-        metadata.append(
-            {
-                "id": index,
-                "seed": seed,
-                "phenomenon": phenomenon,
-                "phenomena": parameters.get(
-                    "phenomena",
-                    [phenomenon],
-                ),
-                "parameters": parameters,
-                "validation": validation,
-            }
-        )
-
-    # Same training-data interface as the existing GAN.
+    # structures: binary occupancy (uint8, 0/1), kept for inspection tools.
+    # sdf: truncated signed distance in [-1, 1], positive inside. GAN target.
     np.savez_compressed(
-        "data/procedural.npz",
-        structures=data,
+        args.output,
+        structures=structures,
+        sdf=sdf,
+        labels=phenomenon_labels,
+        phenomena=np.array(PHENOMENA),
+        sample_phenomenon=np.array(
+            [record["phenomenon"] for record in metadata]
+        ),
+        metric_names=np.array(METRIC_NAMES),
+        tsdf_truncation=np.float32(CONFIG.tsdf_truncation),
+        **metric_arrays,
+    )
+
+    metadata_path = (
+        os.path.splitext(args.output)[0]
+        + "_metadata.json"
     )
 
     with open(
-        "data/procedural_metadata.json",
+        metadata_path,
         "w",
         encoding="utf-8",
     ) as file:
@@ -1387,58 +1535,24 @@ def main():
             indent=2,
         )
 
-    np.savez_compressed(
-        "data/procedural_metadata.npz",
-        ids=np.arange(
-            dataset_size,
-            dtype=np.int32,
-        ),
-        seeds=np.array(
-            [
-                item["seed"]
-                for item in metadata
-            ],
-            dtype=np.uint64,
-        ),
-        phenomena=np.array(
-            [
-                item["phenomenon"]
-                for item in metadata
-            ]
-        ),
-        occupancy=np.array(
-            [
-                item["validation"][
-                    "occupancy"
-                ]
-                for item in metadata
-            ],
-            dtype=np.float32,
-        ),
-        connected_components=np.array(
-            [
-                item["validation"][
-                    "connected_components"
-                ]
-                for item in metadata
-            ],
-            dtype=np.int32,
-        ),
+    print()
+    print("Wrote", args.output)
+    print("Shape:", sdf.shape)
+    print(
+        "Mean occupancy:",
+        float(structures.mean()),
     )
 
     print()
-    print("Wrote data/procedural.npz")
-    print("Shape:", data.shape)
-    print(
-        "Mean occupancy:",
-        float(data.mean()),
-    )
-    print(
-        "Wrote data/procedural_metadata.json"
-    )
-    print(
-        "Wrote data/procedural_metadata.npz"
-    )
+    print("Metric ranges (10th / 50th / 90th percentile):")
+
+    for name in METRIC_NAMES:
+        values = metric_arrays[f"metric_{name}"]
+        p10, p50, p90 = np.percentile(values, [10, 50, 90])
+        print(f"  {name:24s} {p10:8.3f} {p50:8.3f} {p90:8.3f}")
+
+    print()
+    print("Wrote", metadata_path)
 
 
 if __name__ == "__main__":
