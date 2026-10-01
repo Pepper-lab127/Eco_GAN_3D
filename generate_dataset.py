@@ -5,26 +5,36 @@ from multiprocessing import Pool
 
 import numpy as np
 from scipy import ndimage
+from scipy.spatial import cKDTree
 from tqdm import tqdm
 
 from config import CONFIG
-from ecology_metrics import METRIC_NAMES, compute_metrics
+from ecology_metrics import METRIC_NAMES, compute_metrics, exterior_air
 
 
-# Dataset V3.3.1
-# ----------------
-# The central change from V2:
-# there is NO universal ellipsoid/blob base.
+# Dataset V4 - process simulation
+# -------------------------------
+# V3 drew shapes that resembled ecological phenomena (blobs, tubes,
+# gaussian holes). V4 simulates the processes, so form is the record of
+# what happened to the material:
 #
-# Phenomena are generated from morphology/process fields:
-#   branching   -> branching network
-#   clustering  -> field-driven collection of masses
-#   layering    -> deposition bands
-#   cavitation  -> cavities carved from varied scaffolds
-#   porosity    -> surface pores on varied scaffolds
-#   erosion     -> surface removal from varied scaffolds
-#   fragmentation -> fracture fields through varied scaffolds
-#   hybridization -> combinations of those processes
+#   branching     -> space colonisation growth toward light/space,
+#                    branch thickness from the pipe model
+#   clustering    -> competing colonies accreting toward light
+#   layering      -> deposited strata of varying hardness, weathered
+#                    differentially into ledges and recesses
+#   erosion       -> rain (gully incision + drip), wind scour, or salt
+#                    weathering with shelter feedback (tafoni)
+#   cavitation    -> karst dissolution by water percolating from above
+#   porosity      -> Gray-Scott reaction-diffusion pore networks
+#   fragmentation -> jointed blocks, frost cracking and spalling
+#   hybridization -> builders combined, then operators applied in turn
+#
+# Builders make material from nothing. Operators transform an existing
+# mass; on their own they act on a host form (outcrop, boulder, wall or
+# column) standing on the ground.
+#
+# Axis 2 (z) is vertical, index 0 is the ground, as in ecology_metrics.
 
 
 PHENOMENA = [
@@ -37,6 +47,14 @@ PHENOMENA = [
     "fragmentation",
 ]
 
+BUILDERS = {"branching", "clustering", "layering"}
+
+SIX = ndimage.generate_binary_structure(3, 1)
+
+
+# ============================================================
+# Fields and helpers
+# ============================================================
 
 def grid(n):
     a = np.linspace(-1, 1, n, dtype=np.float32)
@@ -53,1186 +71,737 @@ def unit_vector(rng):
     return v / max(np.linalg.norm(v), 1e-8)
 
 
-def noise(X, Y, Z, rng, lo=1.2, hi=4.0):
-    q = np.zeros_like(X, dtype=np.float32)
-
-    for _ in range(4):
-        s = rng.uniform(lo, hi)
-        p = rng.uniform(-np.pi, np.pi, 3)
-        q += (
-            np.sin(s * X + p[0])
-            * np.cos(0.83 * s * Y + p[1])
-            * np.sin(0.71 * s * Z + p[2])
-        )
-
-    return norm(q)
-
-
-def segment_field(X, Y, Z, a, b, radius):
-    """Soft field around a line segment."""
-    a = np.asarray(a, dtype=np.float32)
-    d = np.asarray(b, dtype=np.float32) - a
-    denom = float(np.dot(d, d))
-
-    if denom < 1e-8:
-        dist = np.sqrt(
-            (X - a[0]) ** 2
-            + (Y - a[1]) ** 2
-            + (Z - a[2]) ** 2
-        )
-    else:
-        t = np.clip(
-            (
-                (X - a[0]) * d[0]
-                + (Y - a[1]) * d[1]
-                + (Z - a[2]) * d[2]
-            )
-            / denom,
-            0,
-            1,
-        )
-        px = a[0] + t * d[0]
-        py = a[1] + t * d[1]
-        pz = a[2] + t * d[2]
-
-        dist = np.sqrt(
-            (X - px) ** 2
-            + (Y - py) ** 2
-            + (Z - pz) ** 2
-        )
-
-    return np.exp(-(dist / max(radius, 1e-4)) ** 2).astype(np.float32)
-
-
-def branching_field(X, Y, Z, rng, depth=None):
-    """
-    Hierarchical branching structure.
-
-    This deliberately begins with a line/branch network rather than a blob.
-    """
-    if depth is None:
-        depth = int(rng.integers(2, 4))
-
-    fields = []
-    branches = []
-
-    root = rng.uniform(-0.22, 0.22, 3)
-    direction = unit_vector(rng)
-
-    def grow(start, direction, length, radius, level):
-        direction = direction + rng.normal(scale=0.18, size=3)
-        direction /= max(np.linalg.norm(direction), 1e-8)
-
-        end = np.clip(
-            start + direction * length,
-            -0.90,
-            0.90,
-        )
-
-        fields.append(
-            segment_field(X, Y, Z, start, end, radius)
-        )
-
-        branches.append(
-            {
-                "level": level,
-                "start": start.tolist(),
-                "end": end.tolist(),
-                "radius": float(radius),
-            }
-        )
-
-        if level < depth:
-            for _ in range(int(rng.integers(2, 4))):
-                child_direction = (
-                    direction
-                    + rng.normal(
-                        scale=0.48,
-                        size=3,
-                    )
-                )
-                child_direction /= max(
-                    np.linalg.norm(child_direction),
-                    1e-8,
-                )
-
-                grow(
-                    end,
-                    child_direction,
-                    length * rng.uniform(0.64, 0.86),
-                    max(
-                        0.12,
-                        radius * rng.uniform(0.68, 0.84),
-                    ),
-                    level + 1,
-                )
-
-    grow(
-        root,
-        direction,
-        rng.uniform(0.40, 0.65),
-        rng.uniform(0.18, 0.24),
-        0,
+def resample(field, shape):
+    """Cubic resampling of a coarse lattice to an exact output shape."""
+    coords = np.meshgrid(
+        *[
+            np.linspace(0, s_in - 1, s_out)
+            for s_in, s_out in zip(field.shape, shape)
+        ],
+        indexing="ij",
     )
-
-    return np.max(fields, axis=0), {
-        "depth": depth,
-        "branches": branches,
-    }
+    return ndimage.map_coordinates(
+        field, coords, order=3, mode="reflect"
+    ).astype(np.float32)
 
 
-def branching(X, Y, Z, rng):
-    """Generate a branching morphology without a blob scaffold."""
-    field, details = branching_field(
-        X,
-        Y,
-        Z,
-        rng,
-        depth=int(rng.integers(2, 4)),
-    )
-
-    volume = field > rng.uniform(0.22, 0.36)
-
-    return volume, details
-
-
-def deposition_field(X, Y, Z, rng):
-    """Curved spatial coordinate representing accumulated layers."""
-    direction = unit_vector(rng)
-
-    coordinate = (
-        X * direction[0]
-        + Y * direction[1]
-        + Z * direction[2]
-    )
-
-    coordinate += (
-        noise(X, Y, Z, rng, 0.8, 2.5) - 0.5
-    ) * rng.uniform(0.15, 0.38)
-
-    return coordinate, direction
-
-
-def material_field(X, Y, Z, rng):
+def fbm(shape, rng, base=3, octaves=4, persistence=0.5, stretch=None):
     """
-    Generate continuous material from interacting ecological events.
-
-    No blob, slab, polyhedron, or other object archetype is selected.
-    Material emerges from curved growth paths, local deposits, and
-    environmental modulation.
+    Fractal noise in [0, 1]. stretch scales the frequency per axis,
+    e.g. (1, 1, 4) gives horizontal bedding.
     """
-    field = np.zeros_like(X, dtype=np.float32)
-    events = []
-
-    event_count = int(rng.integers(4, 8))
-
-    for _ in range(event_count):
-        event_type = str(
-            rng.choice(
-                [
-                    "growth_path",
-                    "deposit",
-                    "local_growth",
-                ]
-            )
-        )
-
-        if event_type == "growth_path":
-            start = rng.uniform(-0.75, 0.75, 3)
-            direction = unit_vector(rng)
-            current = start.copy()
-            points = [current.copy()]
-
-            for _step in range(int(rng.integers(2, 5))):
-                direction = (
-                    direction
-                    + rng.normal(scale=0.25, size=3)
-                )
-                direction /= max(
-                    np.linalg.norm(direction),
-                    1e-8,
-                )
-
-                current = np.clip(
-                    current
-                    + direction * rng.uniform(0.16, 0.34),
-                    -0.92,
-                    0.92,
-                )
-                points.append(current.copy())
-
-            radius = rng.uniform(0.13, 0.24)
-
-            for p0, p1 in zip(points[:-1], points[1:]):
-                field = np.maximum(
-                    field,
-                    segment_field(
-                        X, Y, Z, p0, p1, radius
-                    ),
-                )
-
-            events.append(
-                {
-                    "type": event_type,
-                    "points": [p.tolist() for p in points],
-                    "radius": float(radius),
-                }
-            )
-
-        elif event_type == "deposit":
-            center = rng.uniform(-0.60, 0.60, 3)
-            scale = rng.uniform(0.18, 0.48, 3)
-
-            patch = np.exp(
-                -(
-                    ((X - center[0]) / scale[0]) ** 2
-                    + ((Y - center[1]) / scale[1]) ** 2
-                    + ((Z - center[2]) / scale[2]) ** 2
-                )
-            )
-
-            warp = (
-                noise(X, Y, Z, rng, 0.8, 2.6)
-                - 0.5
-            )
-
-            patch *= 0.72 + 0.55 * warp
-            field = np.maximum(
-                field,
-                patch.astype(np.float32),
-            )
-
-            events.append(
-                {
-                    "type": event_type,
-                    "center": center.tolist(),
-                    "scale": scale.tolist(),
-                }
-            )
-
-        else:
-            center = rng.uniform(-0.70, 0.70, 3)
-            direction = unit_vector(rng)
-            elongation = rng.uniform(1.2, 2.8)
-            radius = rng.uniform(0.13, 0.24)
-
-            dx = X - center[0]
-            dy = Y - center[1]
-            dz = Z - center[2]
-
-            parallel = (
-                dx * direction[0]
-                + dy * direction[1]
-                + dz * direction[2]
-            )
-
-            radial_sq = (
-                dx**2 + dy**2 + dz**2 - parallel**2
-            )
-
-            patch = np.exp(
-                -(
-                    (parallel / (radius * elongation)) ** 2
-                    + radial_sq / max(radius**2, 1e-6)
-                )
-            )
-
-            field = np.maximum(
-                field,
-                patch.astype(np.float32),
-            )
-
-            events.append(
-                {
-                    "type": event_type,
-                    "center": center.tolist(),
-                    "direction": direction.tolist(),
-                    "radius": float(radius),
-                    "elongation": float(elongation),
-                }
-            )
-
-    environment = noise(
-        X, Y, Z, rng, 0.65, 2.4
-    )
-
-    field *= 0.72 + 0.48 * environment
-
-    # One continuous host mass: detached specks would otherwise survive
-    # into every surface process built on this field.
-    mass = keep_largest_component(
-        field > rng.uniform(0.28, 0.43)
-    )
-
-    return mass, {
-        "construction": "interacting_material_events",
-        "event_count": event_count,
-        "events": events,
-    }
-
-
-def field_cluster(X, Y, Z, rng):
-    """
-    Clustering as local growth centers responding to one shared field.
-
-    Members are anisotropic and irregular rather than spherical. Some
-    contact and merge; others remain distinct.
-    """
-    count = int(rng.integers(4, 9))
-
-    positions = [
-        rng.uniform(-0.70, 0.70, 3)
-        for _ in range(count)
-    ]
-
-    field_direction = unit_vector(rng)
-
-    environmental = norm(
-        X * field_direction[0]
-        + Y * field_direction[1]
-        + Z * field_direction[2]
-    )
-
-    environmental = np.clip(
-        environmental
-        + 0.35 * (
-            noise(X, Y, Z, rng, 0.9, 2.5)
-            - 0.5
-        ),
-        0,
-        1,
-    )
-
-    radii = [
-        rng.uniform(0.13, 0.24, 3)
-        for _ in positions
-    ]
-
-    directions = [
-        unit_vector(rng)
-        for _ in positions
-    ]
-
-    elongations = [
-        rng.uniform(1.2, 2.5)
-        for _ in positions
-    ]
-
-    attraction = rng.uniform(0.08, 0.35)
-
-    for _ in range(int(rng.integers(4, 9))):
-        new_positions = []
-
-        for i, position in enumerate(positions):
-            position = np.asarray(
-                position,
-                dtype=np.float32,
-            )
-
-            index = np.clip(
-                (
-                    (position + 1)
-                    * 0.5
-                    * (len(X) - 1)
-                ).astype(int),
-                0,
-                len(X) - 1,
-            )
-
-            local_environment = float(
-                environmental[tuple(index)]
-            )
-
-            radii[i] = np.minimum(
-                0.28,
-                np.asarray(radii[i])
-                * (1.0 + 0.025 * local_environment),
-            )
-
-            distances = [
-                (
-                    np.linalg.norm(positions[j] - position)
-                    if j != i
-                    else 1e9
-                )
-                for j in range(len(positions))
-            ]
-
-            nearest = int(np.argmin(distances))
-            delta = positions[nearest] - position
-            distance = np.linalg.norm(delta)
-
-            if distance > 1e-6:
-                position += (
-                    delta / distance
-                    * attraction
-                    * 0.010
-                )
-
-            new_positions.append(
-                np.clip(position, -0.88, 0.88)
-            )
-
-        positions = new_positions
-
-    fields = []
-
-    for i, (position, axes, direction) in enumerate(
-        zip(positions, radii, directions)
-    ):
-        dx = X - position[0]
-        dy = Y - position[1]
-        dz = Z - position[2]
-
-        parallel = (
-            dx * direction[0]
-            + dy * direction[1]
-            + dz * direction[2]
-        )
-
-        radial_sq = (
-            dx**2 + dy**2 + dz**2 - parallel**2
-        )
-
-        field = np.exp(
-            -(
-                (parallel / (axes[0] * elongations[i])) ** 2
-                + radial_sq / max(axes[1] ** 2, 1e-6)
-            )
-        )
-
-        field *= (
-            0.80
-            + 0.40 * noise(X, Y, Z, rng, 1.1, 3.0)
-        )
-
-        fields.append(field.astype(np.float32))
-
-    return np.max(fields, axis=0), {
-        "construction": "field_driven_growth_centers",
-        "initial_forms": count,
-        "field_direction": field_direction.tolist(),
-        "attraction": float(attraction),
-        "coalescence_allowed": True,
-        "members_are_anisotropic": True,
-    }
-
-
-def scaffold(X, Y, Z, rng):
-    """
-    Backward-compatible name for the material field.
-
-    V3.3 no longer selects among geometric scaffold archetypes.
-    """
-    return material_field(X, Y, Z, rng)
-
-
-def surface(mass):
-    """Exterior voxel shell."""
-    interior = mass.copy()
-
-    for axis in range(3):
-        interior &= (
-            np.roll(mass, 1, axis)
-            & np.roll(mass, -1, axis)
-        )
-
-    shell = mass & ~interior
-
-    shell[[0, -1], :, :] = False
-    shell[:, [0, -1], :] = False
-    shell[:, :, [0, -1]] = False
-
-    return shell
-
-
-def cavitation(X, Y, Z, rng):
-    """
-    Cavities carved into a varied mass.
-
-    Cavities can be internal or break through the surface.
-    """
-    mass, base = material_field(
-        X, Y, Z, rng
-    )
-
-    cavity_fields = []
-    cavity_meta = []
-
-    for _ in range(
-        int(rng.integers(12, 24))
-    ):
-        material = np.argwhere(mass)
-
-        if len(material) == 0:
-            break
-
-        voxel = material[
-            int(rng.integers(len(material)))
+    stretch = np.ones(len(shape)) if stretch is None else np.asarray(stretch)
+    total = np.zeros(shape, dtype=np.float32)
+    amplitude = 1.0
+
+    for octave in range(octaves):
+        cells = [
+            int(min(s, max(2, round(base * 2**octave * k)))) + 1
+            for s, k in zip(shape, stretch)
         ]
-
-        center = np.array(
-            [
-                X[tuple(voxel)],
-                Y[tuple(voxel)],
-                Z[tuple(voxel)],
-            ]
+        total += amplitude * resample(
+            rng.standard_normal(cells).astype(np.float32),
+            shape,
         )
+        amplitude *= persistence
 
-        scale = rng.uniform(
-            0.06,
-            0.20,
-            3,
-        )
-
-        smoothness = rng.uniform(
-            0.65,
-            1.35,
-        )
-
-        field = np.exp(
-            -(
-                ((X - center[0]) / scale[0]) ** 2
-                + ((Y - center[1]) / scale[1]) ** 2
-                + ((Z - center[2]) / scale[2]) ** 2
-            )
-            * smoothness
-        )
-
-        cavity_fields.append(field)
-
-        cavity_meta.append(
-            {
-                "center": center.tolist(),
-                "scale": scale.tolist(),
-                "smoothness": float(smoothness),
-            }
-        )
-
-    if cavity_fields:
-        holes = (
-            np.max(cavity_fields, axis=0)
-            > rng.uniform(0.40, 0.58)
-        )
-        mass[holes] = False
-
-    mass = keep_largest_component(
-        mass
-    )
-
-    return mass, {
-        "base": base,
-        "cavity_count": len(cavity_fields),
-        "connectivity_bias": "high",
-        "cavities": cavity_meta,
-    }
-
-
-def porosity(X, Y, Z, rng):
-    """
-    Surface-condition porosity on a varied morphology.
-    """
-    mass, base = material_field(
-        X, Y, Z, rng
-    )
-
-    surface_voxels = np.argwhere(
-        surface(mass)
-    )
-
-    holes = np.zeros_like(
-        mass,
-        dtype=bool,
-    )
-
-    pore_meta = []
-
-    if len(surface_voxels):
-        for _ in range(
-            int(rng.integers(20, 42))
-        ):
-            voxel = surface_voxels[
-                int(rng.integers(len(surface_voxels)))
-            ]
-
-            center = np.array(
-                [
-                    X[tuple(voxel)],
-                    Y[tuple(voxel)],
-                    Z[tuple(voxel)],
-                ]
-            )
-
-            scale = rng.uniform(
-                0.07,
-                0.16,
-                3,
-            )
-
-            field = np.exp(
-                -(
-                    ((X - center[0]) / scale[0]) ** 2
-                    + ((Y - center[1]) / scale[1]) ** 2
-                    + ((Z - center[2]) / scale[2]) ** 2
-                )
-            )
-
-            holes |= (
-                field
-                > rng.uniform(0.52, 0.70)
-            )
-
-            pore_meta.append(
-                {
-                    "center": center.tolist(),
-                    "scale": scale.tolist(),
-                }
-            )
-
-        mass[holes] = False
-
-    mass = keep_largest_component(
-        mass
-    )
-
-    return mass, {
-        "base": base,
-        "pore_count": len(pore_meta),
-        "surface_condition": True,
-        "pores": pore_meta,
-    }
+    return norm(total)
 
 
 def keep_largest_component(volume):
-    """
-    Keep the largest connected material component.
-
-    Surface erosion can legitimately sever a narrow bridge. For this dataset,
-    erosion is intended to weather one continuous hard mass rather than create
-    detached debris, so detached pieces are discarded.
-    """
-    labels, count = connected_components_labeled(volume)
+    labels, count = ndimage.label(volume, structure=SIX)
 
     if count <= 1:
         return volume
 
-    sizes = np.bincount(
-        labels.ravel()
-    )
+    sizes = np.bincount(labels.ravel())
     sizes[0] = 0
+    return labels == int(np.argmax(sizes))
 
-    largest = int(
-        np.argmax(sizes)
+
+def connected_components(volume):
+    if not volume.any():
+        return 0
+    return int(ndimage.label(volume, structure=SIX)[1])
+
+
+def surface_material(volume, outside=None):
+    """Material voxels touching exterior air."""
+    if outside is None:
+        outside = exterior_air(volume)
+    return volume & ndimage.binary_dilation(outside, structure=SIX)
+
+
+def material_above(volume):
+    """Number of material voxels above each voxel (z is up)."""
+    above = np.cumsum(volume[:, :, ::-1], axis=2)[:, :, ::-1]
+    return above - volume
+
+
+def shelter(volume, size=5):
+    return ndimage.uniform_filter(
+        volume.astype(np.float32), size=size, mode="constant"
     )
 
-    return labels == largest
+
+def to_index(points, n):
+    return (np.asarray(points) + 1.0) * 0.5 * (n - 1)
 
 
-def erosion(X, Y, Z, rng):
-    """
-    Surface-only environmental erosion.
+def stamp_capsule(volume, a, b, radius):
+    """Rasterise a capsule between voxel-space points a and b."""
+    n = volume.shape[0]
+    lo = np.maximum(np.floor(np.minimum(a, b) - radius - 1), 0).astype(int)
+    hi = np.minimum(np.ceil(np.maximum(a, b) + radius + 2), n).astype(int)
 
-    The underlying morphology is varied; erosion is the process applied to it.
-    """
-    mass, base = material_field(
-        X, Y, Z, rng
+    if np.any(hi <= lo):
+        return
+
+    gx, gy, gz = np.meshgrid(
+        np.arange(lo[0], hi[0]),
+        np.arange(lo[1], hi[1]),
+        np.arange(lo[2], hi[2]),
+        indexing="ij",
     )
+    p = np.stack([gx, gy, gz], axis=-1).astype(np.float32)
+    d = (b - a).astype(np.float32)
+    denom = float(np.dot(d, d))
+    t = 0.0 if denom < 1e-8 else np.clip(((p - a) @ d) / denom, 0, 1)[..., None]
+    dist = np.linalg.norm(p - (a + t * d), axis=-1)
+    volume[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] |= dist <= radius
 
-    agent = str(
-        rng.choice(
-            ["water", "wind"]
+
+# ============================================================
+# Host forms for operators
+# ============================================================
+
+def host(X, Y, Z, rng):
+    """A rock-like mass standing on the ground."""
+    n = X.shape[0]
+    kind = str(rng.choice(["outcrop", "boulder", "wall", "column"]))
+    warp = fbm(X.shape, rng, base=2, octaves=3) - 0.5
+
+    if kind == "outcrop":
+        radius = rng.uniform(0.6, 0.9)
+        height = fbm((n, n), rng, base=2, octaves=3)
+        r = np.sqrt(X**2 + Y**2) + 0.35 * warp
+        top = -1 + rng.uniform(0.7, 1.5) * (0.4 + 0.6 * height[:, :, None])
+        volume = (r < radius) & (Z < top)
+
+    elif kind == "boulder":
+        axes = rng.uniform([0.6, 0.6, 0.45], [0.9, 0.9, 0.8])
+        cz = -1 + axes[2] * rng.uniform(0.6, 0.9)
+        d = np.sqrt(
+            (X / axes[0]) ** 2 + (Y / axes[1]) ** 2 + ((Z - cz) / axes[2]) ** 2
         )
-    )
+        volume = d + 0.5 * warp < 1.0
 
-    direction = unit_vector(rng)
-    duration = rng.uniform(
-        0.08,
-        0.92,
-    )
-
-    intensity = float(
-        np.clip(
-            duration * rng.uniform(
-                0.75,
-                1.25,
-            ),
-            0.05,
-            1.0,
+    elif kind == "wall":
+        angle = rng.uniform(0, np.pi)
+        normal = np.array([np.cos(angle), np.sin(angle)])
+        along = -normal[1] * X + normal[0] * Y
+        across = normal[0] * X + normal[1] * Y
+        thickness = rng.uniform(0.35, 0.65)
+        length = rng.uniform(0.6, 0.95)
+        top = rng.uniform(0.3, 0.9) + 0.3 * warp
+        volume = (
+            (np.abs(across + 0.15 * warp) < thickness / 2)
+            & (np.abs(along) < length)
+            & (Z < top)
         )
-    )
 
-    directional = norm(
-        X * direction[0]
-        + Y * direction[1]
-        + Z * direction[2]
-    )
-
-    roughness = noise(
-        X,
-        Y,
-        Z,
-        rng,
-        1.5,
-        4.5,
-    )
-
-    if agent == "water":
-        erosion_field = (
-            0.62 * (1 - directional)
-            + 0.38
-            * (
-                np.sin(
-                    directional
-                    * np.pi
-                    * rng.uniform(3, 6)
-                    + roughness * np.pi
-                )
-                + 1
-            )
-            / 2
-        )
     else:
-        erosion_field = (
-            0.68 * directional
-            + 0.32
-            * np.abs(
-                np.sin(
-                    directional
-                    * np.pi
-                    * rng.uniform(4, 8)
-                    + roughness * 2
-                )
-            )
+        radius = rng.uniform(0.35, 0.6)
+        lean = rng.normal(scale=0.15, size=2)
+        profile = fbm((n,), rng, base=3, octaves=2)[None, None, :]
+        r = np.sqrt(
+            (X - lean[0] * (Z + 1)) ** 2 + (Y - lean[1] * (Z + 1)) ** 2
         )
+        top = rng.uniform(0.4, 0.95)
+        volume = (r + 0.25 * warp < radius * (0.7 + 0.6 * profile)) & (Z < top)
 
-    erosion_field = norm(
-        erosion_field
-    )
-
-    for step in range(
-        1 + int(duration * 4)
-    ):
-        shell = surface(mass)
-
-        probability = (
-            erosion_field
-            * intensity
-            * (
-                0.44
-                if step == 0
-                else 0.12
-            )
-        )
-
-        mass[
-            shell
-            & (
-                rng.random(mass.shape)
-                < probability
-            )
-        ] = False
-
-        # Keep erosion as weathering of one continuous mass.
-        mass = keep_largest_component(
-            mass
-        )
-
-    return mass, {
-        "base": base,
-        "agent": agent,
-        "duration": float(duration),
-        "intensity": intensity,
-        "direction": direction.tolist(),
-        "surface_only_primary": True,
-    }
+    volume[:, :, 0] |= volume[:, :, 1]
+    return keep_largest_component(volume), {"host": kind}
 
 
-def layering(X, Y, Z, rng):
+# ============================================================
+# Builders
+# ============================================================
+
+def branching(X, Y, Z, rng):
     """
-    Layering as accumulated environmental history.
-
-    Deposits are finite, warped and irregular. Layer-like organization emerges
-    from repeated accumulation, overlap and termination rather than from a
-    stack of explicit planes.
+    Space colonisation (Runions et al. 2007): branches grow toward free
+    space, competing for it. Thickness follows the pipe model, where a
+    parent's cross-section carries those of its children.
     """
-    coordinate, direction = deposition_field(
-        X, Y, Z, rng
-    )
+    n = X.shape[0]
+    envelope = str(rng.choice(["crown", "canopy", "column", "reach"]))
 
-    material = np.zeros_like(X, dtype=bool)
-    deposits = []
+    centre = {
+        "crown": [0, 0, rng.uniform(0.1, 0.4)],
+        "canopy": [0, 0, rng.uniform(0.4, 0.6)],
+        "column": [0, 0, 0.0],
+        "reach": [rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4), rng.uniform(0.0, 0.4)],
+    }[envelope]
+    radii = {
+        "crown": rng.uniform([0.5, 0.5, 0.35], [0.85, 0.85, 0.6]),
+        "canopy": rng.uniform([0.7, 0.7, 0.2], [0.95, 0.95, 0.35]),
+        "column": rng.uniform([0.3, 0.3, 0.7], [0.45, 0.45, 0.95]),
+        "reach": rng.uniform([0.6, 0.3, 0.3], [0.95, 0.5, 0.5]),
+    }[envelope]
 
-    count = int(rng.integers(5, 10))
+    count = int(rng.integers(400, 900))
+    candidates = rng.uniform(-1, 1, size=(count * 4, 3))
+    inside = (
+        np.sum(((candidates - centre) / radii) ** 2, axis=1) < 1
+    ) & np.all(np.abs(candidates) < 0.94, axis=1)
+    attractors = candidates[inside][:count]
 
-    levels = np.sort(
-        rng.uniform(
-            float(coordinate.min()),
-            float(coordinate.max()),
-            count,
+    step = rng.uniform(0.05, 0.08)
+    influence = rng.uniform(0.3, 0.55)
+    kill = rng.uniform(0.09, 0.15)
+    tropism = rng.uniform(0.0, 0.4)
+
+    roots = int(rng.integers(1, 4))
+    nodes = []
+    parents = []
+
+    for _ in range(roots):
+        nodes.append([rng.uniform(-0.45, 0.45), rng.uniform(-0.45, 0.45), -1.0])
+        parents.append(-1)
+
+    # Trunks rise until they sense the envelope.
+    for i in range(roots):
+        current = i
+        for _ in range(60):
+            p = np.asarray(nodes[current])
+            if len(attractors) == 0 or np.min(
+                np.linalg.norm(attractors - p, axis=1)
+            ) < influence:
+                break
+            nodes.append((p + [0, 0, step]).tolist())
+            parents.append(current)
+            current = len(nodes) - 1
+
+    for _ in range(140):
+        if len(attractors) == 0:
+            break
+
+        points = np.asarray(nodes)
+        distance, nearest = cKDTree(points).query(
+            attractors, distance_upper_bound=influence
         )
-    )
+        active = np.isfinite(distance)
 
-    for level in levels:
-        warp = (
-            noise(X, Y, Z, rng, 0.6, 2.2)
-            - 0.5
-        ) * rng.uniform(0.10, 0.28)
+        if not active.any():
+            break
 
-        thickness = rng.uniform(0.08, 0.20)
-
-        band = (
-            np.abs(
-                coordinate + warp - level
+        growth = {}
+        for a, node in zip(attractors[active], nearest[active]):
+            direction = a - points[node]
+            growth.setdefault(int(node), []).append(
+                direction / max(np.linalg.norm(direction), 1e-8)
             )
-            < thickness
+
+        for node, directions in growth.items():
+            direction = np.sum(directions, axis=0) + [0, 0, tropism]
+            direction /= max(np.linalg.norm(direction), 1e-8)
+            new = np.clip(points[node] + step * direction, -0.97, 0.97)
+            nodes.append(new.tolist())
+            parents.append(node)
+
+        near = cKDTree(np.asarray(nodes)).query(attractors)[0] < kill
+        attractors = attractors[~near]
+
+    points = np.asarray(nodes)
+    parents = np.asarray(parents)
+
+    # Pipe model: r_parent^e = sum(r_child^e), accumulated tips-first.
+    exponent = rng.uniform(2.0, 2.8)
+    area = np.ones(len(points))
+    for i in range(len(points) - 1, -1, -1):
+        if parents[i] >= 0:
+            area[parents[i]] += area[i]
+    radius = area ** (1.0 / exponent)
+    radius *= rng.uniform(0.13, 0.22) / radius.max()
+
+    volume = np.zeros(X.shape, dtype=bool)
+    voxel = to_index(points, n)
+    scale = 0.5 * (n - 1)
+
+    for i in range(len(points)):
+        j = parents[i] if parents[i] >= 0 else i
+        stamp_capsule(
+            volume,
+            voxel[j],
+            voxel[i],
+            max(1.0, radius[i] * scale),
         )
 
-        center = rng.uniform(-0.65, 0.65, 3)
-        scale = rng.uniform(0.22, 0.70, 3)
-
-        footprint = np.exp(
-            -(
-                ((X - center[0]) / scale[0]) ** 2
-                + ((Y - center[1]) / scale[1]) ** 2
-                + ((Z - center[2]) / scale[2]) ** 2
-            )
-        )
-
-        band &= (
-            footprint
-            > rng.uniform(0.08, 0.34)
-        )
-
-        persistence = (
-            0.45
-            + 0.45 * noise(
-                X, Y, Z, rng, 0.8, 2.6
-            )
-        )
-
-        band &= (
-            noise(
-                X, Y, Z, rng, 0.7, 2.4
-            )
-            < persistence
-        )
-
-        material |= band
-
-        deposits.append(
-            {
-                "level": float(level),
-                "thickness": float(thickness),
-                "center": center.tolist(),
-                "scale": scale.tolist(),
-            }
-        )
-
-    # Terminating deposits can leave isolated bands; keep the
-    # continuous accumulated body.
-    material = keep_largest_component(
-        material
-    )
-
-    return material, {
-        "construction": "accumulation_history",
-        "deposit_count": count,
-        "orientation": direction.tolist(),
-        "continuity": "emergent",
-        "overlap": float(rng.uniform(0.30, 0.85)),
-        "deposits": deposits,
+    return keep_largest_component(volume), {
+        "envelope": envelope,
+        "roots": roots,
+        "nodes": int(len(points)),
+        "pipe_exponent": float(exponent),
+        "tropism": float(tropism),
     }
 
 
 def clustering(X, Y, Z, rng):
-    field, metadata = field_cluster(
-        X, Y, Z, rng
-    )
-
-    return (
-        field
-        > rng.uniform(
-            0.36,
-            0.49,
-        ),
-        metadata,
-    )
-
-
-def fragmentation(X, Y, Z, rng):
     """
-    Partial fracture without displacement or detached fragments.
+    Colonies seeded on the ground accrete toward light. Tips that reach
+    open sky grow fastest, so neighbours compete, shade one another and
+    form knobbed, coral-like clusters.
     """
-    mass, base = material_field(
-        X, Y, Z, rng
-    )
+    n = X.shape[0]
+    colonies = int(rng.integers(3, 9))
+    labels = np.zeros(X.shape, dtype=np.int16)
 
-    fracture_field = np.zeros_like(
-        mass,
-        dtype=np.float32,
-    )
+    for c in range(1, colonies + 1):
+        i, j = rng.integers(int(0.15 * n), int(0.85 * n), size=2)
+        labels[i - 1:i + 2, j - 1:j + 2, 0:2] = c
 
-    fractures = []
+    vigour = rng.uniform(0.5, 1.0, colonies + 1)
+    vigour[0] = 0.0
+    light_power = rng.uniform(1.5, 4.0)
+    rate = rng.uniform(0.35, 0.6)
+    texture = fbm(X.shape, rng, base=4, octaves=3)
+    lateral = rng.uniform(0.12, 0.35)
+    iterations = int(rng.uniform(16, 28) * n / 32)
 
-    for _ in range(
-        int(rng.integers(3, 8))
-    ):
-        direction = unit_vector(rng)
-        offset = rng.uniform(
-            -0.45,
-            0.45,
+    for _ in range(iterations):
+        occupied = labels > 0
+        light = np.exp(-0.6 * material_above(occupied))
+        front = ndimage.binary_dilation(occupied, structure=SIX) & ~occupied
+        neighbour = ndimage.grey_dilation(labels, footprint=SIX)
+
+        # Growth is supported from below: voxels resting on the colony
+        # grow freely, sideways growth is slower, overhangs rarer.
+        below = np.zeros_like(occupied)
+        below[:, :, 1:] = occupied[:, :, :-1]
+        support = np.where(below, 1.0, lateral)
+
+        p = (
+            rate
+            * vigour[neighbour]
+            * light ** light_power
+            * support
+            * (0.4 + texture)
         )
+        grow = front & (rng.random(X.shape) < p)
+        labels[grow] = neighbour[grow]
 
-        plane = (
-            X * direction[0]
-            + Y * direction[1]
-            + Z * direction[2]
-            - offset
-        )
+    volume = labels > 0
 
-        warp = (
-            noise(
-                X,
-                Y,
-                Z,
-                rng,
-                1.5,
-                4.0,
-            )
-            - 0.5
-        ) * rng.uniform(
-            0.04,
-            0.12,
-        )
-
-        width = rng.uniform(
-            0.018,
-            0.055,
-        )
-
-        fracture_field = np.maximum(
-            fracture_field,
-            np.exp(
-                -((plane + warp) / width) ** 2
-            ),
-        )
-
-        fractures.append(
-            {
-                "direction": direction.tolist(),
-                "offset": float(offset),
-                "width": float(width),
-            }
-        )
-
-    strength = rng.uniform(
-        0.15,
-        0.72,
-    )
-
-    mass[
-        mass
-        & (
-            fracture_field
-            > rng.uniform(0.45, 0.68)
-        )
-        & (
-            rng.random(mass.shape)
-            < strength * 0.58
-        )
-    ] = False
-
-    mass = keep_largest_component(
-        mass
-    )
-
-    return mass, {
-        "base": base,
-        "fracture_count": len(fractures),
-        "fracture_intensity": float(
-            strength
-        ),
-        "displacement": 0.0,
-        "complete_fracture": False,
-        "fractures": fractures,
+    return volume, {
+        "colonies": colonies,
+        "light_power": float(light_power),
+        "lateral_growth": float(lateral),
+        "iterations": iterations,
     }
 
 
-GENERATORS = {
+def weather(volume, weakness, rng, iterations, mode, rate, direction=None):
+    """
+    Remove exposed surface voxels, one layer of chance per iteration.
+
+    mode
+      "differential": exposure * weakness (soft beds retreat)
+      "salt":         shelter feedback; hollows deepen (tafoni)
+      "rain":         sky-facing surfaces and drip lines
+      "wind":         surfaces facing the wind, abraded by grit
+    """
+    for _ in range(iterations):
+        outside = exterior_air(volume)
+        surface = surface_material(volume, outside)
+
+        if not surface.any():
+            break
+
+        cover = shelter(volume)
+
+        if mode == "differential":
+            p = rate * weakness**2 * (1.4 - cover)
+        elif mode == "salt":
+            p = rate * weakness * (0.08 + 2.2 * cover**3)
+        elif mode == "rain":
+            sky = material_above(volume) == 0
+            drip = ndimage.binary_dilation(sky & surface, iterations=1)
+            p = rate * weakness * (0.15 + 0.85 * drip)
+        else:
+            facing = np.roll(outside, -1, axis=direction[0])
+            if direction[1] < 0:
+                facing = np.roll(outside, 1, axis=direction[0])
+            low = np.clip(1.0 - (np.arange(volume.shape[2]) / volume.shape[2]), 0.3, 1)
+            p = rate * weakness * (0.1 + facing * low[None, None, :]) * (1.2 - cover)
+
+        volume = volume & ~(surface & (rng.random(volume.shape) < p))
+
+    return keep_largest_component(volume)
+
+
+def incise(volume, rng, strength):
+    """
+    Gully incision on the top surface (stream power law): rain falling on
+    the heightmap is routed downslope, and each column is cut in
+    proportion to sqrt(catchment area) * slope.
+    """
+    n = volume.shape[0]
+    filled = volume.any(axis=2)
+    height = np.where(
+        filled, n - np.argmax(volume[:, :, ::-1], axis=2), 0
+    ).astype(np.float32)
+
+    area = np.ones((n, n), dtype=np.float32)
+    slope = np.zeros((n, n), dtype=np.float32)
+    order = np.argsort(-height, axis=None)
+
+    for flat in order:
+        i, j = divmod(int(flat), n)
+        if not filled[i, j]:
+            continue
+        best, drop = None, 0.0
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                a, b = i + di, j + dj
+                if (di or dj) and 0 <= a < n and 0 <= b < n:
+                    d = (height[i, j] - height[a, b]) / (1.414 if di and dj else 1.0)
+                    if d > drop:
+                        best, drop = (a, b), d
+        slope[i, j] = drop
+        if best is not None:
+            area[best] += area[i, j]
+
+    cut = strength * np.sqrt(area) * np.minimum(slope, 3.0)
+    new_height = np.maximum(height - np.round(cut), 1)
+    z = np.arange(n)[None, None, :]
+
+    return keep_largest_component(volume & (z < new_height[:, :, None]))
+
+
+def layering(X, Y, Z, rng):
+    """
+    Strata deposited over time, folded and tilted, then weathered
+    differentially: soft beds retreat under hard caps, leaving ledges,
+    overhangs and recesses.
+    """
+    n = X.shape[0]
+    beds = int(rng.integers(4, 10))
+    top = rng.uniform(0.0, 0.85)
+    thickness = rng.dirichlet(np.ones(beds) * 2.0) * (top + 1.0)
+
+    dip = rng.normal(scale=0.12, size=2)
+    fold = (fbm((n, n), rng, base=2, octaves=2) - 0.5) * rng.uniform(0.0, 0.5)
+    interfaces = -1.0 + np.cumsum(thickness)
+
+    surface_z = Z - (dip[0] * X + dip[1] * Y + fold[:, :, None])
+    bed = np.searchsorted(interfaces, surface_z)
+
+    hardness = rng.uniform(0.0, 1.0, beds + 1)
+    hardness[1::2] = 1.0 - hardness[1::2] * 0.5
+    hardness[0::2] *= 0.6
+    weakness = 1.0 - hardness[np.minimum(bed, beds)]
+    weakness = np.clip(
+        weakness + 0.25 * (fbm(X.shape, rng, base=4, octaves=3) - 0.5), 0, 1
+    )
+
+    footprint = str(rng.choice(["mesa", "ridge", "butte"]))
+    warp = fbm((n, n), rng, base=2, octaves=3)[:, :, None] - 0.5
+    if footprint == "ridge":
+        angle = rng.uniform(0, np.pi)
+        r = np.abs(-np.sin(angle) * X + np.cos(angle) * Y) / rng.uniform(0.3, 0.5)
+    else:
+        size = 0.85 if footprint == "mesa" else 0.5
+        r = np.sqrt(X**2 + Y**2) / rng.uniform(size - 0.15, size)
+    volume = (r + 0.6 * warp < 1.0) & (bed < beds)
+    volume = keep_largest_component(volume)
+
+    iterations = int(rng.uniform(8, 20) * n / 32)
+    volume = weather(
+        volume, weakness, rng, iterations, "differential", rng.uniform(0.25, 0.45)
+    )
+
+    if rng.random() < 0.5:
+        volume = incise(volume, rng, rng.uniform(0.1, 0.35))
+
+    return volume, {
+        "beds": beds,
+        "footprint": footprint,
+        "dip": [float(d) for d in dip],
+        "weathering_iterations": iterations,
+    }
+
+
+# ============================================================
+# Operators
+# ============================================================
+
+def erosion(volume, X, Y, Z, rng):
+    """Weathering by one agent: rain, wind or salt."""
+    n = X.shape[0]
+    agent = str(rng.choice(["rain", "wind", "salt"]))
+    weakness = fbm(
+        X.shape, rng, base=3, octaves=4,
+        stretch=(1, 1, rng.uniform(1, 4)),
+    )
+    duration = rng.uniform(0.3, 1.0)
+    iterations = max(2, int(duration * 22 * n / 32))
+    params = {"agent": agent, "duration": float(duration)}
+
+    if agent == "rain":
+        volume = incise(volume, rng, rng.uniform(0.15, 0.5))
+        volume = weather(volume, weakness, rng, iterations, "rain", rng.uniform(0.2, 0.35))
+    elif agent == "wind":
+        direction = (int(rng.integers(0, 2)), int(rng.choice([-1, 1])))
+        params["direction"] = list(direction)
+        volume = weather(
+            volume, weakness, rng, iterations, "wind", rng.uniform(0.25, 0.4), direction
+        )
+    else:
+        volume = weather(volume, weakness, rng, iterations, "salt", rng.uniform(0.2, 0.32))
+
+    return volume, params
+
+
+def cavitation(volume, X, Y, Z, rng):
+    """
+    Karst dissolution. Water enters at sky-facing surfaces and percolates
+    down, dissolving soluble rock as it goes: vertical shafts, solution
+    pans that hold water, and caves where it spreads along a bed.
+    """
+    n = X.shape[0]
+    solubility = fbm(X.shape, rng, base=3, octaves=3, stretch=(1, 1, 3))
+    joints = np.zeros(X.shape, dtype=np.float32)
+    for _ in range(int(rng.integers(1, 4))):
+        normal = unit_vector(rng)
+        normal[2] *= 0.3
+        plane = X * normal[0] + Y * normal[1] + Z * normal[2] - rng.uniform(-0.4, 0.4)
+        joints = np.maximum(joints, np.exp(-(plane / 0.06) ** 2))
+    solubility = np.clip(0.6 * solubility + 0.6 * joints, 0, 1)
+    # Insoluble beds stop downward dissolution, so water pools on them.
+    beds = fbm(X.shape, rng, base=2, octaves=2, stretch=(0.5, 0.5, 4))
+    solubility[beds > rng.uniform(0.55, 0.7)] *= 0.05
+
+    aggressiveness = rng.uniform(0.25, 0.55)
+    walkers = int(rng.uniform(120, 320) * (n / 32) ** 2)
+    volume = volume.copy()
+    lateral = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    tops = None
+
+    for w in range(walkers):
+        # Entry points: sky-facing surface. Refreshed as the rock changes.
+        if w % 25 == 0:
+            tops = np.argwhere(
+                surface_material(volume) & (material_above(volume) == 0)
+            )
+        if len(tops) == 0:
+            break
+        x, y, z = tops[int(rng.integers(len(tops)))]
+        z = min(z + 1, n - 1)
+        pooled = 0
+
+        for _ in range(3 * n):
+            if z == 0:
+                break
+            if not volume[x, y, z - 1]:
+                z -= 1
+                continue
+            if rng.random() < aggressiveness * solubility[x, y, z - 1]:
+                volume[x, y, z - 1] = False
+                z -= 1
+                continue
+            dx, dy = lateral[int(rng.integers(4))]
+            a, b = x + dx, y + dy
+            if not (0 <= a < n and 0 <= b < n):
+                break
+            if not volume[a, b, z]:
+                x, y = a, b
+            elif rng.random() < 0.5 * aggressiveness * solubility[a, b, z]:
+                volume[a, b, z] = False
+                x, y = a, b
+            else:
+                # Trapped water pools and keeps dissolving its basin,
+                # deepening and widening a solution pan.
+                pooled += 1
+                if pooled > 6:
+                    break
+                d = int(rng.integers(5))
+                if d < 4:
+                    a, b = x + lateral[d][0], y + lateral[d][1]
+                    if 0 <= a < n and 0 <= b < n:
+                        volume[a, b, z] = False
+                else:
+                    volume[x, y, z - 1] = False
+
+    return keep_largest_component(volume), {
+        "walkers": walkers,
+        "aggressiveness": float(aggressiveness),
+    }
+
+
+GRAY_SCOTT = {
+    "vesicular": (0.0367, 0.0649, 0.20),
+    "spongy": (0.042, 0.059, 0.22),
+    "sparse": (0.054, 0.063, 0.12),
+}
+
+
+def gray_scott(regime, rng, size=32, iterations=1200):
+    feed, kill, threshold = GRAY_SCOTT[regime]
+    u = np.ones((size,) * 3, dtype=np.float32)
+    v = np.zeros_like(u)
+    seeds = ndimage.binary_dilation(rng.random(u.shape) < 0.002, iterations=2)
+    v[seeds], u[seeds] = 0.5, 0.25
+    v += 0.02 * rng.random(u.shape).astype(np.float32)
+
+    def laplacian(a):
+        return sum(np.roll(a, s, axis) for axis in range(3) for s in (1, -1)) - 6 * a
+
+    for _ in range(iterations):
+        uvv = u * v * v
+        u += 0.16 * laplacian(u) - uvv + feed * (1 - u)
+        v += 0.08 * laplacian(v) + uvv - (feed + kill) * v
+
+    return v, threshold
+
+
+def porosity(volume, X, Y, Z, rng):
+    """
+    Pores from Gray-Scott reaction-diffusion: depending on feed and kill
+    rates the reacting species settles into isolated vesicles or a
+    sponge of interconnected tunnels. Simulated at 32^3 and resampled,
+    so pore size stays fixed relative to the form at any resolution.
+    """
+    n = X.shape[0]
+    regime = str(rng.choice(list(GRAY_SCOTT)))
+    v, threshold = gray_scott(regime, rng)
+    if n != v.shape[0]:
+        v = resample(v, X.shape)
+
+    pores = v > threshold
+    depth = "surface" if rng.random() < 0.7 else "through"
+    if depth == "surface":
+        pores &= ndimage.distance_transform_edt(volume) < rng.uniform(2, 4) * n / 32
+
+    return keep_largest_component(volume & ~pores), {
+        "regime": regime,
+        "depth": depth,
+    }
+
+
+def fragmentation(volume, X, Y, Z, rng):
+    """
+    Jointed rock: a Voronoi block structure (anisotropic for columnar or
+    sheeted jointing). Cracks open from the surface inward, as frost and
+    roots wedge them, and some surface blocks spall off entirely.
+    """
+    n = X.shape[0]
+    jointing = str(rng.choice(["blocky", "columnar", "sheeted"]))
+    stretch = {
+        "blocky": [1, 1, 1],
+        "columnar": [1, 1, 0.3],
+        "sheeted": [1, 1, 2.5],
+    }[jointing]
+    blocks = int(rng.integers(15, 50))
+
+    points = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1) * stretch
+    seeds = rng.uniform(-1, 1, size=(blocks, 3)) * stretch
+    distance, owner = cKDTree(seeds).query(points, k=2)
+    gap = (distance[:, 1] - distance[:, 0]).reshape(X.shape)
+    block = owner[:, 0].reshape(X.shape)
+
+    width = rng.uniform(0.6, 1.4) * 2.0 / n
+    depth = ndimage.distance_transform_edt(volume)
+    reach = rng.uniform(1.5, 4) * n / 32
+    # Cracks open in patches, leaving rock bridges between blocks.
+    patches = fbm(X.shape, rng, base=3, octaves=2) > rng.uniform(0.35, 0.55)
+    cracks = (gap < width) & (depth < reach) & patches
+    volume = volume & ~cracks
+
+    spall = rng.uniform(0.03, 0.15)
+    exposed = np.unique(block[surface_material(volume)])
+    falling = exposed[rng.random(len(exposed)) < spall]
+    volume &= ~np.isin(block, falling)
+
+    return keep_largest_component(volume), {
+        "jointing": jointing,
+        "blocks": blocks,
+        "spalled_blocks": int(len(falling)),
+    }
+
+
+BUILDER_FUNCTIONS = {
     "branching": branching,
+    "clustering": clustering,
+    "layering": layering,
+}
+
+OPERATOR_FUNCTIONS = {
+    "erosion": erosion,
     "cavitation": cavitation,
     "porosity": porosity,
-    "erosion": erosion,
-    "layering": layering,
-    "clustering": clustering,
     "fragmentation": fragmentation,
 }
 
 
-def hybrid(X, Y, Z, rng):
-    names = list(
-        rng.choice(
-            PHENOMENA,
-            size=int(
-                rng.integers(2, 4)
-            ),
-            replace=False,
-        )
-    )
-
-    mode = str(
-        rng.choice(
-            ["sequential", "simultaneous"]
-        )
-    )
-
+def simulate(names, X, Y, Z, rng):
+    """
+    Run a list of phenomena: builders first (united), then operators in
+    the given order. With no builder, operators act on a host form.
+    """
+    volume = np.zeros(X.shape, dtype=bool)
     processes = []
 
-    if mode == "sequential":
-        volume = None
+    builders = [name for name in names if name in BUILDERS]
+    operators = [name for name in names if name not in BUILDERS]
 
-        for name in names:
-            generated, parameters = GENERATORS[name](
-                X,
-                Y,
-                Z,
-                rng,
-            )
+    for name in builders:
+        built, params = BUILDER_FUNCTIONS[name](X, Y, Z, rng)
+        volume |= built
+        processes.append({"phenomenon": name, "parameters": params})
 
-            if volume is None:
-                volume = generated.copy()
+    if not builders:
+        volume, params = host(X, Y, Z, rng)
+        processes.append({"phenomenon": "host", "parameters": params})
 
-            elif name in {
-                "cavitation",
-                "porosity",
-                "erosion",
-                "fragmentation",
-            }:
-                volume &= generated
+    for name in operators:
+        volume, params = OPERATOR_FUNCTIONS[name](volume, X, Y, Z, rng)
+        processes.append({"phenomenon": name, "parameters": params})
 
-            else:
-                volume |= generated
+    return volume, processes
 
-            processes.append(
-                {
-                    "phenomenon": name,
-                    "parameters": parameters,
-                }
-            )
 
+def generate(phenomenon, X, Y, Z, rng):
+    if phenomenon == "hybridization":
+        names = list(rng.choice(PHENOMENA, size=int(rng.integers(2, 4)), replace=False))
     else:
-        fields = []
+        names = [phenomenon]
 
-        for name in names:
-            generated, parameters = GENERATORS[name](
-                X,
-                Y,
-                Z,
-                rng,
-            )
+    volume, processes = simulate(names, X, Y, Z, rng)
 
-            fields.append(
-                generated.astype(
-                    np.float32
-                )
-            )
-
-            processes.append(
-                {
-                    "phenomenon": name,
-                    "parameters": parameters,
-                }
-            )
-
-        volume = (
-            np.mean(fields, axis=0)
-            > rng.uniform(
-                0.30,
-                0.48,
-            )
-        )
-
-    return volume, {
-        "mode": mode,
-        "phenomena": names,
-        "processes": processes,
-    }
+    return volume, {"phenomena": [str(n) for n in names], "processes": processes}
 
 
-def connected_components_labeled(volume):
-    """
-    Return a 6-connected component label volume and component count.
-    """
-    from scipy import ndimage
+def valid(volume, phenomenon, phenomena):
+    occupancy = float(volume.mean())
+    components = connected_components(volume)
 
-    structure = ndimage.generate_binary_structure(
-        3,
-        1,
-    )
+    ok = 0.02 <= occupancy <= 0.6
 
-    return ndimage.label(
-        volume,
-        structure=structure,
-    )
+    if "clustering" in phenomena:
+        ok &= 1 <= components <= 12
+    else:
+        ok &= components == 1
 
-
-def connected_components(volume):
-    """
-    6-neighbour connected-component count.
-    """
-    if not volume.any():
-        return 0
-
-    _labels, count = connected_components_labeled(
-        volume
-    )
-
-    return int(count)
-
-
-def valid(volume, phenomenon):
-    occupancy = float(
-        volume.mean()
-    )
-
-    components = connected_components(
-        volume
-    )
-
-    valid_sample = (
-        0.015
-        <= occupancy
-        <= 0.55
-    )
-
-    if phenomenon in {
-        "cavitation",
-        "porosity",
-        "erosion",
-        "layering",
-        "fragmentation",
-    }:
-        valid_sample &= (
-            components == 1
-        )
-
-    if phenomenon == "branching":
-        # Reject the extremely sparse branch networks seen in V3.1.
-        valid_sample &= (
-            occupancy >= 0.018
-        )
-
-    if phenomenon == "clustering":
-        # Clustering should contain more than one substantial region.
-        valid_sample &= (
-            occupancy >= 0.025
-        )
-
-    return bool(valid_sample), {
+    return bool(ok), {
         "occupancy": occupancy,
         "connected_components": components,
     }
 
+
+# ============================================================
+# Dataset assembly
+# ============================================================
 
 def to_tsdf(volume, truncation, smoothing):
     """
@@ -1311,26 +880,18 @@ def make_sample(job):
             seed + attempt
         )
 
-        if phenomenon == "hybridization":
-            volume, parameters = hybrid(
-                X,
-                Y,
-                Z,
-                rng,
-            )
-        else:
-            volume, parameters = GENERATORS[
-                phenomenon
-            ](
-                X,
-                Y,
-                Z,
-                rng,
-            )
+        volume, parameters = generate(
+            phenomenon,
+            X,
+            Y,
+            Z,
+            rng,
+        )
 
         ok, validation = valid(
             volume,
             phenomenon,
+            parameters["phenomena"],
         )
 
         last_validation = validation
@@ -1359,10 +920,7 @@ def make_sample(job):
         "seed": seed,
         "attempt": attempt,
         "phenomenon": phenomenon,
-        "phenomena": parameters.get(
-            "phenomena",
-            [phenomenon],
-        ),
+        "phenomena": parameters["phenomena"],
         "parameters": parameters,
         "validation": validation,
         "metrics": metrics,

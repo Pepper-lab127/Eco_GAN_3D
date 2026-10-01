@@ -59,7 +59,24 @@ Run:
 
 python generate_dataset.py
 
-This creates 6000 samples (a few minutes; uses all CPU cores but one):
+Each sample is produced by simulating an ecological process rather than
+drawing a shape that resembles one:
+
+| Phenomenon | Simulation |
+|---|---|
+| branching | space colonisation growth; branch thickness from the pipe model |
+| clustering | colonies accreting toward light, competing and shading each other |
+| layering | deposited strata of varying hardness, weathered into ledges and recesses |
+| erosion | rain (gully incision, drip lines), wind scour, or salt weathering (tafoni) |
+| cavitation | karst dissolution by water percolating down, pooling on insoluble beds |
+| porosity | Gray-Scott reaction-diffusion pores (vesicular, spongy or sparse) |
+| fragmentation | jointed blocks (blocky, columnar, sheeted), frost cracking and spalling |
+| hybridization | 2-3 of the above: growth processes first, then the weathering processes in turn |
+
+Weathering processes act on a host form standing on the ground (outcrop,
+boulder, wall or column). Earlier generator versions are in `legacy/`.
+
+This creates 6000 samples (about 5-10 minutes; uses all CPU cores but one):
 
 data/procedural.npz
 data/procedural_metadata.json
