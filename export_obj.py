@@ -5,6 +5,47 @@ import numpy as np
 from skimage.measure import marching_cubes
 
 
+def default_level(volume):
+    """Signed distance volumes (with negatives) mesh at 0, occupancy at 0.5."""
+    return 0.0 if float(volume.min()) < 0.0 else 0.5
+
+
+def volume_to_mesh(volume, level=None):
+    """
+    Marching cubes, with vertices scaled to normalized coordinates
+    in [-1, 1]. Axis 2 (z) is up.
+    """
+    if level is None:
+        level = default_level(volume)
+
+    if not (volume.min() < level < volume.max()):
+        raise ValueError(
+            f"Volume does not cross level {level} "
+            f"(range {volume.min():.3f} to {volume.max():.3f}); "
+            "nothing to mesh."
+        )
+
+    vertices, faces, normals, values = (
+        marching_cubes(
+            volume,
+            level=level
+        )
+    )
+
+    resolution = volume.shape[0]
+
+    vertices = (
+        vertices /
+        (resolution - 1)
+    )
+
+    vertices = (
+        vertices * 2.0 - 1.0
+    )
+
+    return vertices, faces
+
+
 def write_obj(
     filename,
     vertices,
@@ -55,13 +96,20 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5
+        default=None,
+        help="Iso level. Default: 0 for signed distance, 0.5 for occupancy"
     )
 
     args = parser.parse_args()
 
     volume = np.load(
         args.input
+    )
+
+    level = (
+        default_level(volume)
+        if args.threshold is None
+        else args.threshold
     )
 
     print(
@@ -71,27 +119,12 @@ def main():
 
     print(
         "Occupancy:",
-        volume.mean()
+        float((volume > level).mean())
     )
 
-    vertices, faces, normals, values = (
-        marching_cubes(
-            volume,
-            level=args.threshold
-        )
-    )
-
-    # Convert voxel coordinates to approximately
-    # normalized architectural coordinates.
-    resolution = volume.shape[0]
-
-    vertices = (
-        vertices /
-        (resolution - 1)
-    )
-
-    vertices = (
-        vertices * 2.0 - 1.0
+    vertices, faces = volume_to_mesh(
+        volume,
+        level
     )
 
     write_obj(

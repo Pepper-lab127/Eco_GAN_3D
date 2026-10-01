@@ -33,24 +33,46 @@ class Config:
     # voxel stair-steps. 0 disables.
     tsdf_smoothing: float = 0.6
 
-    batch_size: int = 16
+    # Measured ecological metrics the generator is conditioned on, in
+    # addition to the phenomenon labels. Any name from
+    # ecology_metrics.METRIC_NAMES can be used.
+    condition_metrics: tuple = (
+        "occupancy",
+        "surface_to_volume",
+        "water_retention",
+        "crevice_fraction",
+    )
 
     # ---------------------------------------------------------
     # Training
     # ---------------------------------------------------------
 
-    epochs: int = 10
+    batch_size: int = 16
+
+    # Training length is counted in optimizer steps, not epochs.
+    # Expect usable shapes after ~10k steps and better ones by 30k+.
+    total_steps: int = 30000
 
     learning_rate_generator: float = 0.0002
     learning_rate_discriminator: float = 0.0002
 
-    beta_1: float = 0.5
-    beta_2: float = 0.999
+    beta_1: float = 0.0
+    beta_2: float = 0.99
 
-    # Encourage generated objects to remain spatially sparse.
-    sparsity_weight: float = 0.15
+    # R1 gradient penalty on real samples (stabilises the discriminator).
+    # Applied every r1_interval steps, scaled to compensate.
+    r1_gamma: float = 1.0
+    r1_interval: int = 4
 
-    target_occupancy: float = 0.10
+    # Exponential moving average of generator weights. The EMA generator
+    # is used for previews and exported checkpoints.
+    ema_decay: float = 0.999
+
+    log_every: int = 100
+    preview_every: int = 1000
+    checkpoint_every: int = 2500
+
+    log_dir: str = "logs"
 
     # ---------------------------------------------------------
     # Checkpoints
