@@ -1,0 +1,13 @@
+# Core
+numpy>=1.23
+scipy>=1.9
+scikit-image>=0.19
+tqdm>=4.64
+matplotlib>=3.6
+
+# TensorFlow
+# - Linux / WSL2 with an NVIDIA GPU:  pip install "tensorflow[and-cuda]"
+# - Windows native GPU: the last supported release is TensorFlow 2.10
+#   (Python 3.10, CUDA 11.2, cuDNN 8.1):  pip install "tensorflow<2.11"
+# - CPU only: the line below is enough.
+tensorflow>=2.10

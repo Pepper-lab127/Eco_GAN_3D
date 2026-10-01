@@ -256,7 +256,7 @@ def material_field(X, Y, Z, rng):
                 )
                 points.append(current.copy())
 
-            radius = rng.uniform(0.09, 0.18)
+            radius = rng.uniform(0.13, 0.24)
 
             for p0, p1 in zip(points[:-1], points[1:]):
                 field = np.maximum(
@@ -309,7 +309,7 @@ def material_field(X, Y, Z, rng):
             center = rng.uniform(-0.70, 0.70, 3)
             direction = unit_vector(rng)
             elongation = rng.uniform(1.2, 2.8)
-            radius = rng.uniform(0.10, 0.19)
+            radius = rng.uniform(0.13, 0.24)
 
             dx = X - center[0]
             dy = Y - center[1]
@@ -353,7 +353,13 @@ def material_field(X, Y, Z, rng):
 
     field *= 0.72 + 0.48 * environment
 
-    return field > rng.uniform(0.28, 0.43), {
+    # One continuous host mass: detached specks would otherwise survive
+    # into every surface process built on this field.
+    mass = keep_largest_component(
+        field > rng.uniform(0.28, 0.43)
+    )
+
+    return mass, {
         "construction": "interacting_material_events",
         "event_count": event_count,
         "events": events,
@@ -393,7 +399,7 @@ def field_cluster(X, Y, Z, rng):
     )
 
     radii = [
-        rng.uniform(0.10, 0.20, 3)
+        rng.uniform(0.13, 0.24, 3)
         for _ in positions
     ]
 
@@ -605,6 +611,10 @@ def cavitation(X, Y, Z, rng):
         )
         mass[holes] = False
 
+    mass = keep_largest_component(
+        mass
+    )
+
     return mass, {
         "base": base,
         "cavity_count": len(cavity_fields),
@@ -675,6 +685,10 @@ def porosity(X, Y, Z, rng):
             )
 
         mass[holes] = False
+
+    mass = keep_largest_component(
+        mass
+    )
 
     return mass, {
         "base": base,
@@ -909,6 +923,12 @@ def layering(X, Y, Z, rng):
             }
         )
 
+    # Terminating deposits can leave isolated bands; keep the
+    # continuous accumulated body.
+    material = keep_largest_component(
+        material
+    )
+
     return material, {
         "construction": "accumulation_history",
         "deposit_count": count,
@@ -1016,6 +1036,10 @@ def fragmentation(X, Y, Z, rng):
             < strength * 0.58
         )
     ] = False
+
+    mass = keep_largest_component(
+        mass
+    )
 
     return mass, {
         "base": base,
@@ -1150,58 +1174,15 @@ def connected_components_labeled(volume):
 def connected_components(volume):
     """
     6-neighbour connected-component count.
-    Kept intentionally simple so no scipy dependency is required.
     """
     if not volume.any():
         return 0
 
-    seen = np.zeros_like(
-        volume,
-        dtype=bool,
+    _labels, count = connected_components_labeled(
+        volume
     )
 
-    count = 0
-
-    for start in np.argwhere(volume):
-        start = tuple(
-            map(int, start)
-        )
-
-        if seen[start]:
-            continue
-
-        count += 1
-        stack = [start]
-        seen[start] = True
-
-        while stack:
-            x, y, z = stack.pop()
-
-            for dx, dy, dz in (
-                (1, 0, 0),
-                (-1, 0, 0),
-                (0, 1, 0),
-                (0, -1, 0),
-                (0, 0, 1),
-                (0, 0, -1),
-            ):
-                q = (
-                    x + dx,
-                    y + dy,
-                    z + dz,
-                )
-
-                if (
-                    0 <= q[0] < volume.shape[0]
-                    and 0 <= q[1] < volume.shape[1]
-                    and 0 <= q[2] < volume.shape[2]
-                    and volume[q]
-                    and not seen[q]
-                ):
-                    seen[q] = True
-                    stack.append(q)
-
-    return count
+    return int(count)
 
 
 def valid(volume, phenomenon):
