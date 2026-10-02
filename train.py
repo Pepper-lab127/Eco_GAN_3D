@@ -124,21 +124,29 @@ class ConditionedDataset:
 
 class EcologicalGAN:
 
-    def __init__(self, resolution, condition_dim):
+    def __init__(
+        self,
+        resolution,
+        condition_dim,
+        generator_fn=build_generator,
+        discriminator_fn=build_discriminator,
+    ):
+        # The builders are swappable so the same training logic serves
+        # the 3D volume GAN and the 2D surface texture GAN.
 
-        self.generator = build_generator(
+        self.generator = generator_fn(
             resolution=resolution,
             condition_dim=condition_dim,
         )
 
-        self.discriminator = build_discriminator(
+        self.discriminator = discriminator_fn(
             resolution=resolution,
             condition_dim=condition_dim,
         )
 
         # Slow-moving average of the generator: smoother, more reliable
         # samples than the raw generator at any single step.
-        self.ema = build_generator(
+        self.ema = generator_fn(
             resolution=resolution,
             condition_dim=condition_dim,
         )
@@ -215,7 +223,7 @@ class EcologicalGAN:
                 r1_penalty = tf.reduce_mean(
                     tf.reduce_sum(
                         tf.square(gradients),
-                        axis=[1, 2, 3, 4]
+                        axis=list(range(1, len(real.shape)))
                     )
                 )
                 d_loss += (

@@ -32,8 +32,10 @@ class FiLM(tf.keras.layers.Layer):
             2,
             axis=-1,
         )
-        gamma = tf.reshape(gamma, [-1, 1, 1, 1, self.channels])
-        beta = tf.reshape(beta, [-1, 1, 1, 1, self.channels])
+        # Broadcast over every spatial axis (2D maps or 3D volumes).
+        shape = [-1] + [1] * (len(x.shape) - 2) + [self.channels]
+        gamma = tf.reshape(gamma, shape)
+        beta = tf.reshape(beta, shape)
         return x * (1.0 + gamma) + beta
 
 
@@ -47,9 +49,8 @@ class MinibatchStdDev(tf.keras.layers.Layer):
     def call(self, x):
         _mean, variance = tf.nn.moments(x, axes=[0])
         std = tf.reduce_mean(tf.sqrt(variance + 1e-8))
-        shape = tf.shape(x)
         feature = tf.fill(
-            [shape[0], shape[1], shape[2], shape[3], 1],
+            tf.concat([tf.shape(x)[:-1], [1]], axis=0),
             std,
         )
         return tf.concat([x, feature], axis=-1)

@@ -75,6 +75,18 @@ class Config:
     log_dir: str = "logs"
 
     # ---------------------------------------------------------
+    # Surface detail (2D texture GAN, see generate_textures.py)
+    # ---------------------------------------------------------
+
+    texture_size: int = 128
+    texture_dataset_size: int = 4000
+    texture_dataset_path: str = "data/textures.npz"
+    texture_total_steps: int = 20000
+    texture_batch_size: int = 32
+    texture_checkpoint_dir: str = "checkpoints_texture"
+    texture_output_dir: str = "outputs_texture"
+
+    # ---------------------------------------------------------
     # Checkpoints
     # ---------------------------------------------------------
 

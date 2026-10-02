@@ -189,6 +189,18 @@ def main():
 
         achieved = compute_metrics(volume > 0)
 
+        # Sidecar so apply_detail.py can match surface detail to the form.
+        with open(filename.replace(".npy", ".json"), "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "phenomena": phenomena,
+                    "targets": dict(zip(stats["condition_metrics"], map(float, target_metrics))),
+                    "achieved": {k: float(v) for k, v in achieved.items()},
+                },
+                file,
+                indent=2,
+            )
+
         comparison = ", ".join(
             f"{name} {target:.3f}->{achieved[name]:.3f}"
             for name, target in zip(stats["condition_metrics"], target_metrics)

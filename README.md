@@ -203,6 +203,56 @@ above 0 = material
 
 0 = the surface
 
+## 7. Surface detail (fine weathering)
+
+The 3D GAN gives the overall form at 32^3, too coarse to hold fine
+weathering. A second, 2D GAN learns high-resolution height maps of
+weathered surfaces, and `apply_detail.py` carves them into the form at
+128^3 (or higher) before meshing, so pits, ledges and rills are real
+geometry.
+
+The height maps come from 2D process simulations with the same phenomenon
+labels as the volumes:
+
+| Phenomenon | Surface process |
+|---|---|
+| branching | drainage or root networks from flow accumulation |
+| clustering | colonies spreading into knobbed domes |
+| layering | cross-bedded strata, soft beds recessed behind hard ledges |
+| erosion | rain droplets carving rills, or salt weathering into honeycomb (tafoni) |
+| cavitation | karst solution pans and runnels |
+| porosity | reaction-diffusion vesicles |
+| fragmentation | jointed blocks, open cracks, spalled blocks |
+
+Every map tiles seamlessly, and the texture GAN uses wrap-around padding
+so its output tiles too, which lets one texture wrap around a form.
+
+Build the texture dataset (about a minute) and train the texture GAN
+(2D, light enough for a laptop GPU):
+
+python generate_textures.py
+
+python train_textures.py
+
+Previews go to `outputs_texture/`, weights to `checkpoints_texture/`.
+Training resumes automatically; `--fresh` starts over.
+
+Add detail to a generated structure:
+
+python apply_detail.py --input outputs/generated_0000.npy
+
+- The texture phenomena are read from `generated_0000.json`, which
+  `generate.py` writes next to each sample; `--phenomena erosion,layering`
+  overrides them.
+- Without a trained texture GAN, or with `--procedural`, the textures are
+  simulated directly instead.
+- `--amplitude` sets the detail depth (fine-grid voxels, default 2.5),
+  `--tile` how finely it repeats (default 1.5), `--resolution` the fine
+  grid (default 128; 192 or 256 for print-scale detail), and
+  `--weathering` how much stronger detail is on upward-facing surfaces.
+
+The result is `generated_0000_detail.obj` (plus the fine `.npy` field).
+
 ## Repository layout
 
 | File | Purpose |
@@ -214,5 +264,9 @@ above 0 = material
 | `train.py` | training loop, previews, checkpoints |
 | `generate.py` | sampling with phenomenon/metric targets |
 | `export_obj.py` | marching cubes to OBJ |
+| `generate_textures.py` | surface-detail height map dataset |
+| `texture_models.py` | tileable 2D texture generator and discriminator |
+| `train_textures.py` | texture GAN training |
+| `apply_detail.py` | carve surface detail into a generated form |
 | `inspect_dataset.py` | dataset gallery |
 | `legacy/` | earlier dataset generator versions |
