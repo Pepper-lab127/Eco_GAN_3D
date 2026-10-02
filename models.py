@@ -257,6 +257,33 @@ def build_discriminator(
 
 
 # ============================================================
+# Loading weights across TensorFlow versions
+# ============================================================
+
+def load_weights(model, path):
+    """
+    model.load_weights with a clear message for the one common failure:
+    weights saved by Keras 3 (TensorFlow 2.16+, e.g. Kaggle or Colab)
+    cannot be read by Keras 2 (TensorFlow 2.15 and older, e.g. the
+    TensorFlow 2.10 needed for native Windows GPU support).
+    """
+    try:
+        model.load_weights(path)
+    except ValueError as error:
+        if tf.__version__ < "2.16":
+            raise SystemExit(
+                f"Could not load {path} with TensorFlow {tf.__version__}.\n"
+                "These weights were most likely saved by a newer TensorFlow "
+                "(Keras 3, e.g. on Kaggle or Colab), which TensorFlow 2.10 "
+                "cannot read. Run this script in an environment with a "
+                "current TensorFlow instead; generating and adding detail "
+                "run fine on the CPU. See README, 'Using weights trained "
+                "elsewhere'."
+            ) from error
+        raise
+
+
+# ============================================================
 # Quick test
 # ============================================================
 

@@ -92,6 +92,7 @@ def latest_texture_checkpoint(directory):
 
 
 def gan_textures(checkpoint, phenomena, count, seed):
+    from models import load_weights
     from texture_models import build_texture_generator
 
     stats_path = os.path.join(os.path.dirname(checkpoint), "texture_stats.json")
@@ -103,7 +104,7 @@ def gan_textures(checkpoint, phenomena, count, seed):
         latent_dim=stats["latent_dim"],
         condition_dim=len(stats["phenomena"]),
     )
-    generator.load_weights(checkpoint)
+    load_weights(generator, checkpoint)
 
     condition = np.zeros((count, len(stats["phenomena"])), dtype=np.float32)
     for name in phenomena:

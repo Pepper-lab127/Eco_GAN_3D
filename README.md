@@ -253,6 +253,24 @@ python apply_detail.py --input outputs/generated_0000.npy
 
 The result is `generated_0000_detail.obj` (plus the fine `.npy` field).
 
+## Using weights trained elsewhere
+
+Weights saved by a current TensorFlow (2.16 or newer, as on Kaggle and
+Colab) use the Keras 3 format, which TensorFlow 2.10 (the last version
+with native Windows GPU support) cannot read. Generating and adding
+detail are light enough for the CPU, so keep a second environment with a
+current TensorFlow for them:
+
+conda create -n ecogan-cpu python=3.11 -y
+
+conda activate ecogan-cpu
+
+pip install tensorflow numpy scipy scikit-image tqdm matplotlib
+
+Run `generate.py` and `apply_detail.py` in `ecogan-cpu`, and keep the
+`ecogan` (TensorFlow 2.10 GPU) environment for training on the laptop.
+Each environment reads the weights it saved itself.
+
 ## Repository layout
 
 | File | Purpose |

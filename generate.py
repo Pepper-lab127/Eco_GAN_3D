@@ -8,7 +8,7 @@ import tensorflow as tf
 from config import CONFIG
 from ecology_metrics import compute_metrics
 from export_obj import volume_to_mesh, write_obj
-from models import build_generator
+from models import build_generator, load_weights
 
 
 def parse_args():
@@ -155,7 +155,7 @@ def main():
         condition_dim=condition_dim,
     )
 
-    generator.load_weights(args.checkpoint)
+    load_weights(generator, args.checkpoint)
 
     print("Loaded:", args.checkpoint)
 
