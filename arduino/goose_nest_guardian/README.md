@@ -4,17 +4,25 @@ An Arduino nest that judges whether its surroundings suit a Canada goose egg
 and shows how it feels with a fan of five grass "tail feathers" on servos. When
 something approaches, the same feathers rise up, rattle and swat at it.
 
-## Parts
+## Wiring
 
 | Part | Pin |
 |---|---|
-| DHT22 temperature/humidity | D2 |
-| PIR motion sensor: left / center / right | D4 / D5 / D6 |
-| HC-SR04 ultrasonic (TRIG / ECHO), facing straight out | D7 / D8 |
+| DHT11 temperature/humidity (S) | D2 |
+| HC-SR501 motion sensor: left / right (OUT) | D4 / D5 |
+| HC-SR04 distance sensor, left (TRIG / ECHO) | D6 / D7 |
+| HC-SR04 distance sensor, right (TRIG / ECHO) | D8 / A3 |
 | 5 servos (far left → far right) | D3, D9, D10, D11, D12 |
 | Photoresistor + 10k divider | A0 |
-| MQ-135 air quality (AO) | A1 |
+| KY-037 sound sensor (AO) | A1 |
 | Passive buzzer (optional) | A2 |
+
+Every sensor's VCC goes to the Arduino's 5V and its GND to GND. The KY-037's DO
+pin is not used.
+
+Aim the left distance and motion sensors about 30° to the left and the right
+pair about 30° to the right. Their beams should overlap a little in front of
+the nest. The nest uses that layout to tell which side something is coming from.
 
 Power the servos from their own 5–6 V supply rated for at least 2–3 A, and join
 its ground to the Arduino's ground.
@@ -29,7 +37,7 @@ Libraries: **DHT sensor library** (Adafruit), **Adafruit Unified Sensor**, Servo
 | 1 (left) | humidity |
 | 2 (center) | overall comfort |
 | 3 (right) | light |
-| 4 (far right) | air quality |
+| 4 (far right) | quietness |
 
 A tall feather means its factor is good and a drooping one means it is poor.
 
@@ -39,7 +47,7 @@ A tall feather means its factor is good and a drooping one means it is poor.
 
 | Threat | Trigger | Reaction |
 |---|---|---|
-| ALERT | motion, or something within 2 m | fan rises, leans toward it, quivers |
+| ALERT | motion, something within 2 m, or a sudden loud noise | fan rises, leans toward it, quivers |
 | WARN | within 1 m, approaching fast, or motion lasting more than 4 s | full display, rattle, hiss |
 | DEFEND | within 40 cm | feathers on that side swat fast |
 
@@ -49,9 +57,20 @@ Each threat level drops back one step after 4 s of calm.
 
 1. Set `FEATHER_DOWN_ANGLE` / `FEATHER_UP_ANGLE` for each servo before you
    attach the grass. If a servo is mounted mirrored, swap its two values.
-2. Open the Serial Monitor (9600 baud) and look at the `air=` reading in clean
-   air. Set `AIR_IDEAL_HI` a little above that value.
-3. Set `LOCKDOWN_PHASE = true` for the last 3 days before hatching. This raises
+2. **HC-SR501**: put the jumper on **H** (repeat trigger), turn the time knob
+   fully anticlockwise (shortest hold, about 3 s) and set the sensitivity knob
+   to the middle.
+3. **KY-037**: open the Serial Monitor (9600 baud) and watch `noise=`. Read it
+   once in a quiet room and once while someone talks nearby, then set
+   `NOISE_IDEAL_HI` between the two. If the nest gets startled by ordinary
+   noises, raise `LOUD_MARGIN`. Keep the microphone away from the servos.
+4. Set `LOCKDOWN_PHASE = true` for the last 3 days before hatching. This raises
    the humidity target.
-4. The PIR sensors are ignored for the first 30 s and the air sensor for the
-   first 60 s while they warm up.
+5. The motion sensors are ignored for the first 60 s while they warm up.
+
+## DHT11 limits
+
+The DHT11 reads temperature in whole degrees, accurate to ±2 °C, and humidity
+from 20–80 %, accurate to ±5 %. That's enough for this project, but too rough
+to control a real incubator. For that, a DHT22 drops straight in: change
+`DHT_TYPE` to `DHT22`.

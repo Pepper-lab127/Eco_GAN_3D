@@ -15,7 +15,7 @@
  *    1 = left       -> humidity
  *    2 = center     -> overall comfort
  *    3 = right      -> light
- *    4 = far right  -> air quality
+ *    4 = far right  -> quietness
  *
  *  MOOD MODE (nothing nearby)
  *    Each feather's height shows how good its factor is: a tall
@@ -26,8 +26,9 @@
  *      DISTRESSED -> the whole fan sags and shivers
  *
  *  DEFENSE MODE (something approaches)
- *    ALERT  -> motion seen far away: the fan rises, leans toward the
- *              intruder and quivers
+ *    ALERT  -> motion seen, something within range, or a sudden loud
+ *              noise: the fan rises, leans toward the intruder and
+ *              quivers
  *    WARN   -> something is getting close or coming fast: the fan
  *              spreads fully, rattles and hisses (if a buzzer is fitted)
  *    DEFEND -> something is right at the nest: the feathers on the
@@ -36,17 +37,21 @@
  *  ------------------------------------------------------------------
  *  HARDWARE (Arduino Uno / Nano / Mega)
  *  ------------------------------------------------------------------
- *    DHT22 temperature/humidity  -> D2
- *    PIR motion, LEFT            -> D4
- *    PIR motion, CENTER          -> D5
- *    PIR motion, RIGHT           -> D6
- *    HC-SR04 ultrasonic TRIG     -> D7   (faces straight out, center)
- *    HC-SR04 ultrasonic ECHO     -> D8
- *    Servo feathers 0..4         -> D3, D9, D10, D11, D12
- *    Photoresistor (LDR)         -> A0   (LDR to 5V, 10k resistor to GND,
- *                                         junction to A0: brighter = higher)
- *    MQ-135 air quality (AO)     -> A1
- *    Passive buzzer (optional)   -> A2   (used as a digital pin to hiss)
+ *    DHT11 temperature/humidity (S pin)  -> D2
+ *    HC-SR501 PIR, LEFT  (OUT)           -> D4
+ *    HC-SR501 PIR, RIGHT (OUT)           -> D5
+ *    HC-SR04 ultrasonic LEFT  TRIG/ECHO  -> D6 / D7
+ *    HC-SR04 ultrasonic RIGHT TRIG/ECHO  -> D8 / A3
+ *    Servo feathers 0..4                 -> D3, D9, D10, D11, D12
+ *    Photoresistor (LDR)                 -> A0  (LDR to 5V, 10k resistor
+ *                                                to GND, junction to A0:
+ *                                                brighter = higher)
+ *    KY-037 sound sensor (AO pin)        -> A1
+ *    Passive buzzer (optional)           -> A2
+ *
+ *  Aim the two ultrasonic sensors about 30 degrees outward, one to the
+ *  left and one to the right, so their beams overlap a little in front.
+ *  Point the two PIR sensors the same way.
  *
  *  !! Power the servos from a separate 5-6 V supply (at least 2-3 A)
  *  !! and connect its GND to the Arduino GND. Five servos swatting at
@@ -65,20 +70,22 @@
 // ===================================================================
 //  PINS
 // ===================================================================
-const uint8_t PIN_DHT        = 2;
-const uint8_t PIN_PIR_LEFT   = 4;
-const uint8_t PIN_PIR_CENTER = 5;
-const uint8_t PIN_PIR_RIGHT  = 6;
-const uint8_t PIN_US_TRIG    = 7;
-const uint8_t PIN_US_ECHO    = 8;
-const uint8_t PIN_LIGHT      = A0;
-const uint8_t PIN_AIR        = A1;
-const uint8_t PIN_BUZZER     = A2;
+const uint8_t PIN_DHT          = 2;
+const uint8_t PIN_PIR_LEFT     = 4;
+const uint8_t PIN_PIR_RIGHT    = 5;
+const uint8_t PIN_US_LEFT_TRIG = 6;
+const uint8_t PIN_US_LEFT_ECHO = 7;
+const uint8_t PIN_US_RIGHT_TRIG = 8;
+const uint8_t PIN_US_RIGHT_ECHO = A3;
+const uint8_t PIN_LIGHT        = A0;
+const uint8_t PIN_SOUND        = A1;
+const uint8_t PIN_BUZZER       = A2;
+const uint8_t PIN_RANDOM_SEED  = A5;   // leave unconnected
 
 const uint8_t NUM_FEATHERS = 5;
 const uint8_t PIN_FEATHER[NUM_FEATHERS] = {3, 9, 10, 11, 12};
 
-#define DHT_TYPE DHT22
+#define DHT_TYPE DHT11
 #define USE_BUZZER 1          // set to 0 if you have no buzzer
 
 // ===================================================================
@@ -102,13 +109,16 @@ const int FEATHER_UP_ANGLE[NUM_FEATHERS]   = {160, 160, 160, 160, 160};
 // humidity should be raised and the eggs are no longer turned.
 const bool LOCKDOWN_PHASE = false;
 
-// Temperature (deg C): goose eggs like about 37.5 C (99.5 F)
+// Temperature (deg C): goose eggs like about 37.5 C (99.5 F).
+// The DHT11 reads in whole degrees and is only accurate to +/-2 C,
+// so the ideal window is a little wider than an incubator would use.
 const float TEMP_BAD_LOW   = 35.0;
-const float TEMP_IDEAL_LOW = 37.2;
-const float TEMP_IDEAL_HI  = 37.8;
-const float TEMP_BAD_HIGH  = 39.5;
+const float TEMP_IDEAL_LOW = 37.0;
+const float TEMP_IDEAL_HI  = 38.0;
+const float TEMP_BAD_HIGH  = 40.0;
 
-// Relative humidity (%): around 50-55 % normally, 70-80 % at lockdown
+// Relative humidity (%): around 50-55 % normally, 70-80 % at lockdown.
+// The DHT11 only measures 20-80 % (+/-5 %).
 const float HUM_BAD_LOW    = LOCKDOWN_PHASE ? 55.0 : 30.0;
 const float HUM_IDEAL_LOW  = LOCKDOWN_PHASE ? 70.0 : 50.0;
 const float HUM_IDEAL_HI   = LOCKDOWN_PHASE ? 80.0 : 60.0;
@@ -121,21 +131,22 @@ const float LIGHT_IDEAL_LOW =  0.0;
 const float LIGHT_IDEAL_HI  = 40.0;
 const float LIGHT_BAD_HIGH  = 85.0;
 
-// Air quality (raw MQ-135 reading, 0-1023, higher = worse). These
-// numbers are rough: watch the Serial Monitor in clean outdoor air and
-// set AIR_IDEAL_HI a little above what you see there.
-const float AIR_BAD_LOW   = -1.0;
-const float AIR_IDEAL_LOW =  0.0;
-const float AIR_IDEAL_HI  = 300.0;
-const float AIR_BAD_HIGH  = 600.0;
+// Noise (KY-037 peak-to-peak reading, 0-1023, higher = louder).
+// Nesting geese pick quiet spots. These numbers depend on your
+// sensor: watch "noise=" in the Serial Monitor in a quiet room and
+// while talking nearby, then set NOISE_IDEAL_HI between the two.
+const float NOISE_BAD_LOW   = -1.0;
+const float NOISE_IDEAL_LOW =  0.0;
+const float NOISE_IDEAL_HI  = 15.0;
+const float NOISE_BAD_HIGH  = 80.0;
 
 // How much each factor counts toward the overall comfort score
-enum Factor { F_TEMP, F_HUM, F_LIGHT, F_AIR, NUM_FACTORS };
-const float FACTOR_WEIGHT[NUM_FACTORS] = {0.40, 0.30, 0.15, 0.15};
-const char* const FACTOR_NAME[NUM_FACTORS] = {"temp", "humidity", "light", "air"};
+enum Factor { F_TEMP, F_HUM, F_LIGHT, F_NOISE, NUM_FACTORS };
+const float FACTOR_WEIGHT[NUM_FACTORS] = {0.45, 0.30, 0.10, 0.15};
+const char* const FACTOR_NAME[NUM_FACTORS] = {"temp", "humidity", "light", "quiet"};
 
 // Which feather shows which factor (-1 = the overall score)
-const int8_t FEATHER_FACTOR[NUM_FEATHERS] = {F_TEMP, F_HUM, -1, F_LIGHT, F_AIR};
+const int8_t FEATHER_FACTOR[NUM_FEATHERS] = {F_TEMP, F_HUM, -1, F_LIGHT, F_NOISE};
 
 // Mood thresholds on the overall score (0..1)
 const float MOOD_CONTENT_MIN = 0.75;
@@ -147,18 +158,28 @@ const float MOOD_UNEASY_MIN  = 0.45;
 const float ALERT_DIST_CM       = 200.0;  // notice things inside this range
 const float WARN_DIST_CM        = 100.0;  // threat display inside this range
 const float DEFEND_DIST_CM      =  40.0;  // swat at things inside this range
+const float CENTER_DIFF_CM      =  25.0;  // both sonars within this of each other = straight ahead
 const float APPROACH_FAST_CM_S  =  40.0;  // closing faster than this = WARN
 const unsigned long MOTION_PERSIST_MS = 4000;  // lingering motion -> WARN
 const unsigned long THREAT_HOLD_MS    = 4000;  // calm down one level after this
 
+// A sudden sound this far above the background level startles the
+// nest into ALERT. Raise it if it jumps at ordinary noises.
+const float LOUD_MARGIN   = 60.0;
+const unsigned long LOUD_STARTLE_MS = 1500;
+// Ignore the microphone this long after defending, so the nest's own
+// servos and hissing don't keep it on alert forever.
+const unsigned long SOUND_IGNORE_AFTER_THREAT_MS = 1500;
+
 // ===================================================================
 //  TIMING
 // ===================================================================
-const unsigned long PIR_WARMUP_MS      = 30000;  // PIRs give false hits at power-up
-const unsigned long AIR_WARMUP_MS      = 60000;  // MQ-135 heater needs to warm up
-const unsigned long DHT_INTERVAL_MS    = 2000;   // DHT22 can't be read faster
-const unsigned long ANALOG_INTERVAL_MS = 200;
-const unsigned long SONAR_INTERVAL_MS  = 70;
+const unsigned long PIR_WARMUP_MS      = 60000;  // HC-SR501 gives false hits for ~1 min at power-up
+const unsigned long DHT_INTERVAL_MS    = 2000;   // DHT11 can't be read faster than once a second
+const unsigned long LIGHT_INTERVAL_MS  = 200;
+const unsigned long SOUND_INTERVAL_MS  = 100;
+const unsigned long SOUND_WINDOW_US    = 20000;  // listen for 20 ms each time
+const unsigned long SONAR_INTERVAL_MS  = 50;     // sonars take turns, so each pings every 100 ms
 const unsigned long ANIM_INTERVAL_MS   = 20;
 const unsigned long REPORT_INTERVAL_MS = 2000;
 
@@ -176,6 +197,22 @@ struct Feather {
 };
 Feather feathers[NUM_FEATHERS];
 
+struct Sonar {
+  uint8_t trigPin;
+  uint8_t echoPin;
+  float history[3];        // last 3 raw pings, for a median filter
+  uint8_t historyIndex;
+  float distanceCm;        // filtered distance, -1 = nothing in range
+  float approachSpeed;     // cm/s, positive = getting closer
+  unsigned long lastPingMs;
+};
+enum { SONAR_LEFT, SONAR_RIGHT, NUM_SONARS };
+Sonar sonars[NUM_SONARS] = {
+  {PIN_US_LEFT_TRIG,  PIN_US_LEFT_ECHO,  {-1, -1, -1}, 0, -1, 0, 0},
+  {PIN_US_RIGHT_TRIG, PIN_US_RIGHT_ECHO, {-1, -1, -1}, 0, -1, 0, 0},
+};
+uint8_t nextSonar = 0;
+
 enum Mood { MOOD_CONTENT, MOOD_UNEASY, MOOD_DISTRESSED };
 const char* const MOOD_NAME[] = {"CONTENT", "UNEASY", "DISTRESSED"};
 
@@ -186,8 +223,10 @@ const char* const THREAT_NAME[] = {"none", "ALERT", "WARN", "DEFEND"};
 float tempC = NAN;
 float humidity = NAN;
 float lightPct = 0;
-float airRaw = 0;
-bool  analogPrimed = false;
+bool  lightPrimed = false;
+float soundLevel = 0;      // latest peak-to-peak loudness
+float soundAvg = 0;        // slow background loudness
+bool  soundPrimed = false;
 
 float factorScore[NUM_FACTORS];
 bool  factorValid[NUM_FACTORS];
@@ -195,12 +234,10 @@ float overallScore = 0.5;
 Mood  mood = MOOD_UNEASY;
 
 // Threat sensing
-bool  pirLeft = false, pirCenter = false, pirRight = false;
-float distanceCm = -1;         // -1 = nothing in range
-float approachSpeed = 0;       // cm/s, positive = getting closer
-float sonarHistory[3] = {-1, -1, -1};
-uint8_t sonarIndex = 0;
+bool pirLeft = false, pirRight = false;
 unsigned long motionStartMs = 0;
+unsigned long loudUntilMs = 0;
+unsigned long lastThreatMs = 0;
 
 ThreatLevel threat = THREAT_NONE;
 int8_t threatDir = 0;          // -1 = left, 0 = center, +1 = right
@@ -216,7 +253,7 @@ bool hissing = false;
 unsigned long lastHissChangeMs = 0;
 
 // Timers
-unsigned long lastDhtMs = 0, lastAnalogMs = 0, lastSonarMs = 0;
+unsigned long lastDhtMs = 0, lastLightMs = 0, lastSoundMs = 0, lastSonarMs = 0;
 unsigned long lastAnimMs = 0, lastReportMs = 0;
 unsigned long bootMs = 0;
 
@@ -270,28 +307,49 @@ void readDht() {
   factorValid[F_HUM] = !isnan(h);
 }
 
-void readAnalogSensors(unsigned long now) {
+void readLight() {
   float light = analogRead(PIN_LIGHT) * 100.0 / 1023.0;
-  float air = analogRead(PIN_AIR);
-
-  // Smooth out the noisy analog readings
-  if (!analogPrimed) {
-    lightPct = light;
-    airRaw = air;
-    analogPrimed = true;
-  } else {
-    lightPct = lightPct * 0.85 + light * 0.15;
-    airRaw = airRaw * 0.85 + air * 0.15;
-  }
+  // Smooth out flicker and passing shadows
+  lightPct = lightPrimed ? lightPct * 0.85 + light * 0.15 : light;
+  lightPrimed = true;
   factorValid[F_LIGHT] = true;
-  factorValid[F_AIR] = (now - bootMs) > AIR_WARMUP_MS;
+}
+
+void readSound(unsigned long now) {
+  // The KY-037's AO pin gives the raw microphone wave around a middle
+  // value. Loudness = how far it swings (peak-to-peak) in a short window.
+  int lo = 1023, hi = 0;
+  unsigned long start = micros();
+  while (micros() - start < SOUND_WINDOW_US) {
+    int v = analogRead(PIN_SOUND);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  soundLevel = hi - lo;
+
+  // While defending (and just after), the nest's own servos and
+  // hissing are the loudest thing around, so don't listen.
+  bool selfNoise = threat != THREAT_NONE ||
+                   (lastThreatMs && now - lastThreatMs < SOUND_IGNORE_AFTER_THREAT_MS);
+  if (selfNoise) return;
+
+  if (!soundPrimed) {
+    soundAvg = soundLevel;
+    soundPrimed = true;
+  }
+  // A sudden noise well above the background startles the nest
+  if (soundLevel > soundAvg + LOUD_MARGIN) loudUntilMs = now + LOUD_STARTLE_MS;
+
+  // Background loudness, averaged over about 5 seconds
+  soundAvg = soundAvg * 0.98 + soundLevel * 0.02;
+  factorValid[F_NOISE] = true;
 }
 
 void updateScores() {
   factorScore[F_TEMP]  = rangeScore(tempC, TEMP_BAD_LOW, TEMP_IDEAL_LOW, TEMP_IDEAL_HI, TEMP_BAD_HIGH);
   factorScore[F_HUM]   = rangeScore(humidity, HUM_BAD_LOW, HUM_IDEAL_LOW, HUM_IDEAL_HI, HUM_BAD_HIGH);
   factorScore[F_LIGHT] = rangeScore(lightPct, LIGHT_BAD_LOW, LIGHT_IDEAL_LOW, LIGHT_IDEAL_HI, LIGHT_BAD_HIGH);
-  factorScore[F_AIR]   = rangeScore(airRaw, AIR_BAD_LOW, AIR_IDEAL_LOW, AIR_IDEAL_HI, AIR_BAD_HIGH);
+  factorScore[F_NOISE] = rangeScore(soundAvg, NOISE_BAD_LOW, NOISE_IDEAL_LOW, NOISE_IDEAL_HI, NOISE_BAD_HIGH);
 
   // Overall = half the weighted average, half the worst factor.
   // One really bad factor (like cold) can ruin an egg on its own,
@@ -314,48 +372,66 @@ void updateScores() {
 // ===================================================================
 //  SENSORS: THREATS
 // ===================================================================
-float pingDistanceCm() {
-  digitalWrite(PIN_US_TRIG, LOW);
+float pingDistanceCm(const Sonar& s) {
+  digitalWrite(s.trigPin, LOW);
   delayMicroseconds(2);
-  digitalWrite(PIN_US_TRIG, HIGH);
+  digitalWrite(s.trigPin, HIGH);
   delayMicroseconds(10);
-  digitalWrite(PIN_US_TRIG, LOW);
-  unsigned long echoUs = pulseIn(PIN_US_ECHO, HIGH, 25000UL);  // ~4 m max
+  digitalWrite(s.trigPin, LOW);
+  unsigned long echoUs = pulseIn(s.echoPin, HIGH, 25000UL);  // ~4 m max
   if (echoUs == 0) return -1;
   return echoUs / 58.0;
 }
 
-void readSonar() {
-  sonarHistory[sonarIndex] = pingDistanceCm();
-  sonarIndex = (sonarIndex + 1) % 3;
+// Ping one sonar per call. Taking turns stops one sensor from
+// hearing the other's echo.
+void readNextSonar(unsigned long now) {
+  Sonar& s = sonars[nextSonar];
+  nextSonar = (nextSonar + 1) % NUM_SONARS;
+
+  s.history[s.historyIndex] = pingDistanceCm(s);
+  s.historyIndex = (s.historyIndex + 1) % 3;
 
   // Median of the last 3 pings rejects single bad echoes
-  float d = median3(sonarHistory[0], sonarHistory[1], sonarHistory[2]);
+  float d = median3(s.history[0], s.history[1], s.history[2]);
   if (d > ALERT_DIST_CM * 1.5) d = -1;  // too far away to matter
 
   // Approach speed, smoothed
-  if (d > 0 && distanceCm > 0) {
-    float raw = (distanceCm - d) / (SONAR_INTERVAL_MS / 1000.0);
-    approachSpeed = approachSpeed * 0.7 + raw * 0.3;
+  float dt = (now - s.lastPingMs) / 1000.0;
+  if (d > 0 && s.distanceCm > 0 && dt > 0) {
+    float raw = (s.distanceCm - d) / dt;
+    s.approachSpeed = s.approachSpeed * 0.7 + raw * 0.3;
   } else {
-    approachSpeed *= 0.7;
+    s.approachSpeed *= 0.7;
   }
-  distanceCm = d;
+  s.distanceCm = d;
+  s.lastPingMs = now;
 }
 
 void readPirs(unsigned long now) {
   if (now - bootMs < PIR_WARMUP_MS) {
-    pirLeft = pirCenter = pirRight = false;
+    pirLeft = pirRight = false;
     return;
   }
   pirLeft = digitalRead(PIN_PIR_LEFT) == HIGH;
-  pirCenter = digitalRead(PIN_PIR_CENTER) == HIGH;
   pirRight = digitalRead(PIN_PIR_RIGHT) == HIGH;
 }
 
 void updateThreat(unsigned long now) {
-  bool anyMotion = pirLeft || pirCenter || pirRight;
-  bool seen = distanceCm > 0 && distanceCm < ALERT_DIST_CM;
+  const Sonar& L = sonars[SONAR_LEFT];
+  const Sonar& R = sonars[SONAR_RIGHT];
+  bool seenL = L.distanceCm > 0 && L.distanceCm < ALERT_DIST_CM;
+  bool seenR = R.distanceCm > 0 && R.distanceCm < ALERT_DIST_CM;
+  bool seen = seenL || seenR;
+
+  // Closest thing either sonar can see
+  float nearest = -1;
+  float approach = 0;
+  if (seenL) { nearest = L.distanceCm; approach = L.approachSpeed; }
+  if (seenR && (nearest < 0 || R.distanceCm < nearest)) { nearest = R.distanceCm; approach = R.approachSpeed; }
+
+  bool anyMotion = pirLeft || pirRight;
+  bool startled = now < loudUntilMs;
 
   if (anyMotion) {
     if (motionStartMs == 0) motionStartMs = now;
@@ -365,18 +441,20 @@ void updateThreat(unsigned long now) {
 
   // How serious is it right now?
   ThreatLevel desired = THREAT_NONE;
-  if (anyMotion || seen) desired = THREAT_ALERT;
-  if (seen && distanceCm < WARN_DIST_CM) desired = THREAT_WARN;
-  if (seen && approachSpeed > APPROACH_FAST_CM_S) desired = THREAT_WARN;
+  if (anyMotion || seen || startled) desired = THREAT_ALERT;
+  if (seen && nearest < WARN_DIST_CM) desired = THREAT_WARN;
+  if (seen && approach > APPROACH_FAST_CM_S) desired = THREAT_WARN;
   if (motionStartMs && now - motionStartMs > MOTION_PERSIST_MS && desired < THREAT_WARN) desired = THREAT_WARN;
-  if (seen && distanceCm < DEFEND_DIST_CM) desired = THREAT_DEFEND;
+  if (seen && nearest < DEFEND_DIST_CM) desired = THREAT_DEFEND;
 
-  // Where is it coming from? The sonar points straight ahead, so a
-  // close echo means center; otherwise trust the side PIRs.
-  if (seen && distanceCm < WARN_DIST_CM)   threatDir = 0;
-  else if (pirLeft && !pirRight)           threatDir = -1;
-  else if (pirRight && !pirLeft)           threatDir = 1;
-  else if (anyMotion || seen)              threatDir = 0;
+  // Where is it coming from? The sonars give the best direction;
+  // the PIRs are used when nothing is close enough to measure.
+  if (seenL && seenR && fabs(L.distanceCm - R.distanceCm) < CENTER_DIFF_CM) threatDir = 0;
+  else if (seenL && (!seenR || L.distanceCm < R.distanceCm))               threatDir = -1;
+  else if (seenR)                                                          threatDir = 1;
+  else if (pirLeft && !pirRight)                                           threatDir = -1;
+  else if (pirRight && !pirLeft)                                           threatDir = 1;
+  else if (anyMotion || startled)                                          threatDir = 0;
 
   // React at once, but calm down one step at a time
   if (desired >= threat) {
@@ -384,7 +462,9 @@ void updateThreat(unsigned long now) {
       Serial.print(F(">> Threat: "));
       Serial.print(THREAT_NAME[desired]);
       Serial.print(F(" from the "));
-      Serial.println(threatDir < 0 ? F("LEFT") : threatDir > 0 ? F("RIGHT") : F("FRONT"));
+      Serial.print(threatDir < 0 ? F("LEFT") : threatDir > 0 ? F("RIGHT") : F("FRONT"));
+      if (startled && !anyMotion && !seen) Serial.print(F(" (loud noise)"));
+      Serial.println();
     }
     if (desired != THREAT_NONE || threat != THREAT_NONE) threatChangedMs = now;
     threat = desired;
@@ -394,6 +474,7 @@ void updateThreat(unsigned long now) {
     Serial.print(F("<< Calming down to: "));
     Serial.println(THREAT_NAME[threat]);
   }
+  if (threat != THREAT_NONE) lastThreatMs = now;
 }
 
 // ===================================================================
@@ -508,9 +589,9 @@ void moveFeathers(float dt) {
 }
 
 // ===================================================================
-//  SOUND
+//  SOUND OUTPUT
 // ===================================================================
-void updateSound(unsigned long now) {
+void updateBuzzer(unsigned long now) {
 #if USE_BUZZER
   bool wantHiss = (threat == THREAT_DEFEND) ||
                   (threat == THREAT_WARN && (now % 700) < 300);
@@ -531,16 +612,23 @@ void updateSound(unsigned long now) {
 // ===================================================================
 //  REPORT
 // ===================================================================
+void printSonar(const Sonar& s) {
+  if (s.distanceCm > 0) { Serial.print(s.distanceCm, 0); Serial.print(F("cm")); }
+  else Serial.print(F("--"));
+}
+
 void printReport(unsigned long now) {
   Serial.print(F("T="));
-  if (isnan(tempC)) Serial.print(F("--")); else Serial.print(tempC, 1);
+  if (isnan(tempC)) Serial.print(F("--")); else Serial.print(tempC, 0);
   Serial.print(F("C  RH="));
   if (isnan(humidity)) Serial.print(F("--")); else Serial.print(humidity, 0);
   Serial.print(F("%  light="));
   Serial.print(lightPct, 0);
-  Serial.print(F("%  air="));
-  Serial.print(airRaw, 0);
-  if (!factorValid[F_AIR]) Serial.print(F("(warming)"));
+  Serial.print(F("%  noise="));
+  Serial.print(soundAvg, 0);
+  Serial.print(F(" (now "));
+  Serial.print(soundLevel, 0);
+  Serial.print(')');
 
   Serial.print(F("  | scores"));
   for (uint8_t f = 0; f < NUM_FACTORS; f++) {
@@ -554,12 +642,12 @@ void printReport(unsigned long now) {
   Serial.print(F("  mood="));
   Serial.print(MOOD_NAME[mood]);
 
-  Serial.print(F("  | dist="));
-  if (distanceCm > 0) { Serial.print(distanceCm, 0); Serial.print(F("cm")); }
-  else Serial.print(F("--"));
+  Serial.print(F("  | sonar L="));
+  printSonar(sonars[SONAR_LEFT]);
+  Serial.print(F(" R="));
+  printSonar(sonars[SONAR_RIGHT]);
   Serial.print(F(" pir="));
   Serial.print(pirLeft ? 'L' : '-');
-  Serial.print(pirCenter ? 'C' : '-');
   Serial.print(pirRight ? 'R' : '-');
   if (now - bootMs < PIR_WARMUP_MS) Serial.print(F("(warming)"));
   Serial.print(F(" threat="));
@@ -592,17 +680,18 @@ void setup() {
   Serial.println(F("Goose Nest Guardian waking up..."));
 
   pinMode(PIN_PIR_LEFT, INPUT);
-  pinMode(PIN_PIR_CENTER, INPUT);
   pinMode(PIN_PIR_RIGHT, INPUT);
-  pinMode(PIN_US_TRIG, OUTPUT);
-  pinMode(PIN_US_ECHO, INPUT);
-  digitalWrite(PIN_US_TRIG, LOW);
+  for (uint8_t s = 0; s < NUM_SONARS; s++) {
+    pinMode(sonars[s].trigPin, OUTPUT);
+    pinMode(sonars[s].echoPin, INPUT);
+    digitalWrite(sonars[s].trigPin, LOW);
+  }
 #if USE_BUZZER
   pinMode(PIN_BUZZER, OUTPUT);
 #endif
 
   dht.begin();
-  randomSeed(analogRead(A3));  // floating pin gives a random seed
+  randomSeed(analogRead(PIN_RANDOM_SEED));
 
   for (uint8_t i = 0; i < NUM_FEATHERS; i++) {
     feathers[i].servo.attach(PIN_FEATHER[i]);
@@ -621,7 +710,7 @@ void setup() {
 
   bootMs = millis();
   lastAnimMs = bootMs;
-  Serial.println(F("Awake. Motion sensors warming up for 30 s, air sensor for 60 s."));
+  Serial.println(F("Awake. Motion sensors warming up for 60 s."));
 }
 
 void loop() {
@@ -632,20 +721,24 @@ void loop() {
     lastDhtMs = now;
     readDht();
   }
-  if (now - lastAnalogMs >= ANALOG_INTERVAL_MS) {
-    lastAnalogMs = now;
-    readAnalogSensors(now);
+  if (now - lastLightMs >= LIGHT_INTERVAL_MS) {
+    lastLightMs = now;
+    readLight();
     updateScores();
+  }
+  if (now - lastSoundMs >= SOUND_INTERVAL_MS) {
+    lastSoundMs = now;
+    readSound(now);
   }
   if (now - lastSonarMs >= SONAR_INTERVAL_MS) {
     lastSonarMs = now;
-    readSonar();
+    readNextSonar(now);
   }
   readPirs(now);
   updateThreat(now);
 
   // --- Feel & act ---
-  now = millis();  // the sonar ping may have taken a few ms
+  now = millis();  // sonar and sound reads take a few ms
   if (now - lastAnimMs >= ANIM_INTERVAL_MS) {
     float dt = (now - lastAnimMs) / 1000.0;
     lastAnimMs = now;
@@ -653,7 +746,7 @@ void loop() {
     else animateDefense(now);
     moveFeathers(dt);
   }
-  updateSound(now);
+  updateBuzzer(now);
 
   // --- Report ---
   if (now - lastReportMs >= REPORT_INTERVAL_MS) {
