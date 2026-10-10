@@ -103,35 +103,52 @@ const int FEATHER_UP_ANGLE[NUM_FEATHERS]   = {160, 160, 160, 160, 160};
 // ===================================================================
 //  EGG ENVIRONMENT TARGETS
 //  Each factor scores 1.0 inside its ideal range and falls to 0.0 at
-//  the "bad" limits. Values are for incubating Canada goose eggs
-//  (28-day incubation). Change them to suit your setup.
+//  the "bad" limits. Change them to suit your setup.
 // ===================================================================
+
+// DEMO MODE: for showing the nest indoors. A normal room counts as
+// comfortable, so the fan starts out content, and people can change
+// its mood by hand:
+//   - cup a hand around the DHT11      -> too warm, temperature feather droops
+//   - breathe on the DHT11             -> too humid, humidity feather droops
+//   - shine a phone torch on the LDR   -> too bright, light feather droops
+//   - talk loudly or clap near the mic -> too noisy, quiet feather droops
+// Set to false to use the real targets for incubating a Canada goose
+// egg (28-day incubation), where only a ~37.5 C incubator makes it happy.
+const bool DEMO_MODE = true;
 
 // Set to true for the last 3 days before hatching ("lockdown"), when
 // humidity should be raised and the eggs are no longer turned.
+// (Ignored in demo mode.)
 const bool LOCKDOWN_PHASE = false;
 
 // Temperature (deg C): goose eggs like about 37.5 C (99.5 F).
 // The DHT11 reads in whole degrees and is only accurate to +/-2 C,
 // so the ideal window is a little wider than an incubator would use.
-const float TEMP_BAD_LOW   = 35.0;
-const float TEMP_IDEAL_LOW = 37.0;
-const float TEMP_IDEAL_HI  = 38.0;
-const float TEMP_BAD_HIGH  = 40.0;
+const float TEMP_BAD_LOW   = DEMO_MODE ? 12.0 : 35.0;
+const float TEMP_IDEAL_LOW = DEMO_MODE ? 19.0 : 37.0;
+const float TEMP_IDEAL_HI  = DEMO_MODE ? 25.0 : 38.0;
+const float TEMP_BAD_HIGH  = DEMO_MODE ? 31.0 : 40.0;
 
 // Relative humidity (%): around 50-55 % normally, 70-80 % at lockdown.
 // The DHT11 only measures 20-80 % (+/-5 %).
-const float HUM_BAD_LOW    = LOCKDOWN_PHASE ? 55.0 : 30.0;
-const float HUM_IDEAL_LOW  = LOCKDOWN_PHASE ? 70.0 : 50.0;
-const float HUM_IDEAL_HI   = LOCKDOWN_PHASE ? 80.0 : 60.0;
-const float HUM_BAD_HIGH   = LOCKDOWN_PHASE ? 90.0 : 75.0;
+const float HUM_BAD_LOW    = DEMO_MODE ? 20.0 : LOCKDOWN_PHASE ? 55.0 : 30.0;
+const float HUM_IDEAL_LOW  = DEMO_MODE ? 35.0 : LOCKDOWN_PHASE ? 70.0 : 50.0;
+const float HUM_IDEAL_HI   = DEMO_MODE ? 65.0 : LOCKDOWN_PHASE ? 80.0 : 60.0;
+const float HUM_BAD_HIGH   = DEMO_MODE ? 85.0 : LOCKDOWN_PHASE ? 90.0 : 75.0;
 
 // Light (0-100 % of the LDR range): a shaded nest is good. Strong
 // direct sun overheats the egg and makes the nest easy to see.
 const float LIGHT_BAD_LOW   = -1.0;   // darkness is fine
 const float LIGHT_IDEAL_LOW =  0.0;
-const float LIGHT_IDEAL_HI  = 40.0;
-const float LIGHT_BAD_HIGH  = 85.0;
+float lightIdealHi  = 40.0;
+float lightBadHigh  = 85.0;
+// In demo mode the nest instead measures the room's light for the
+// first few seconds and calls that normal. Only light this much
+// brighter than the room starts to bother it:
+const unsigned long LIGHT_LEARN_MS = 5000;
+const float DEMO_LIGHT_OK_ABOVE    =  8.0;   // % above the room light that is still fine
+const float DEMO_LIGHT_BAD_ABOVE   = 35.0;   // % above the room light that is as bad as it gets
 
 // Noise (KY-037 peak-to-peak reading, 0-1023, higher = louder).
 // Nesting geese pick quiet spots. These numbers depend on your
@@ -240,6 +257,9 @@ float tempC = NAN;
 float humidity = NAN;
 float lightPct = 0;
 bool  lightPrimed = false;
+bool  lightLearning = DEMO_MODE;
+float lightLearnSum = 0;
+uint16_t lightLearnCount = 0;
 float soundLevel = 0;      // latest peak-to-peak loudness
 float soundAvg = 0;        // slow background loudness
 bool  soundPrimed = false;
@@ -323,12 +343,33 @@ void readDht() {
   factorValid[F_HUM] = !isnan(h);
 }
 
-void readLight() {
+void readLight(unsigned long now) {
   float light = analogRead(PIN_LIGHT) * 100.0 / 1023.0;
   // Smooth out flicker and passing shadows
   lightPct = lightPrimed ? lightPct * 0.85 + light * 0.15 : light;
   lightPrimed = true;
-  factorValid[F_LIGHT] = true;
+
+  if (lightLearning) {
+    // Demo mode: measure the room's normal light level first
+    lightLearnSum += light;
+    lightLearnCount++;
+    if (now - bootMs >= LIGHT_LEARN_MS) {
+      float roomLight = lightLearnSum / lightLearnCount;
+      lightIdealHi = roomLight + DEMO_LIGHT_OK_ABOVE;
+      lightBadHigh = roomLight + DEMO_LIGHT_BAD_ABOVE;
+      lightLearning = false;
+      Serial.print(F("Room light is "));
+      Serial.print(roomLight, 0);
+      Serial.print(F("%. Light feather droops above "));
+      Serial.print(lightIdealHi, 0);
+      Serial.println(F("%."));
+      if (lightIdealHi >= 100) {
+        Serial.println(F("  (The room already reads near 100%, so brighter light can't register."));
+        Serial.println(F("   Check the 10k resistor from A0 to GND, or shade the sensor.)"));
+      }
+    }
+  }
+  factorValid[F_LIGHT] = !lightLearning;
 }
 
 void readSound(unsigned long now) {
@@ -364,7 +405,7 @@ void readSound(unsigned long now) {
 void updateScores() {
   factorScore[F_TEMP]  = rangeScore(tempC, TEMP_BAD_LOW, TEMP_IDEAL_LOW, TEMP_IDEAL_HI, TEMP_BAD_HIGH);
   factorScore[F_HUM]   = rangeScore(humidity, HUM_BAD_LOW, HUM_IDEAL_LOW, HUM_IDEAL_HI, HUM_BAD_HIGH);
-  factorScore[F_LIGHT] = rangeScore(lightPct, LIGHT_BAD_LOW, LIGHT_IDEAL_LOW, LIGHT_IDEAL_HI, LIGHT_BAD_HIGH);
+  factorScore[F_LIGHT] = rangeScore(lightPct, LIGHT_BAD_LOW, LIGHT_IDEAL_LOW, lightIdealHi, lightBadHigh);
   factorScore[F_NOISE] = rangeScore(soundAvg, NOISE_BAD_LOW, NOISE_IDEAL_LOW, NOISE_IDEAL_HI, NOISE_BAD_HIGH);
 
   // Overall = half the weighted average, half the worst factor.
@@ -739,6 +780,7 @@ void wakeUpAnimation() {
 void setup() {
   Serial.begin(9600);
   Serial.println(F("Goose Nest Guardian waking up..."));
+  if (DEMO_MODE) Serial.println(F("DEMO MODE: a normal room counts as comfortable."));
 
   pinMode(PIN_PIR_LEFT, INPUT);
   pinMode(PIN_PIR_RIGHT, INPUT);
@@ -785,7 +827,7 @@ void loop() {
   }
   if (now - lastLightMs >= LIGHT_INTERVAL_MS) {
     lastLightMs = now;
-    readLight();
+    readLight(now);
     updateScores();
   }
   if (now - lastSoundMs >= SOUND_INTERVAL_MS) {

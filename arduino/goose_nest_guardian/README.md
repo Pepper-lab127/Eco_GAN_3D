@@ -55,6 +55,24 @@ A tall feather means its factor is good and a drooping one means it is poor.
 
 Each threat level drops back one step after 4 s of calm.
 
+## Demo mode
+
+`DEMO_MODE = true` (the default) is for showing the nest indoors. A normal room
+(19–25 °C, 35–65 % humidity, the room's own light level) counts as comfortable,
+so the fan starts out content. People can then change its mood:
+
+| Do this | What happens |
+|---|---|
+| Cup a hand around the DHT11 | At about 28 °C the nest turns uneasy, and at 30 °C distressed |
+| Breathe on the DHT11 | Humidity rises and the humidity feather droops |
+| Shine a phone torch on the photoresistor | The light feather droops |
+| Talk loudly or clap near the KY-037 | The quiet feather droops, and a sudden clap startles it into ALERT |
+
+The nest measures the room's light during the first 5 seconds and treats that
+as normal, so don't shade or light the sensor while it starts up.
+
+Set `DEMO_MODE = false` to use the real goose-egg targets (37–38 °C).
+
 ## First-time setup
 
 1. Set `FEATHER_DOWN_ANGLE` / `FEATHER_UP_ANGLE` for each servo before you
