@@ -162,6 +162,14 @@ const float WARN_DIST_CM        = 100.0;  // threat display inside this range
 const float DEFEND_DIST_CM      =  40.0;  // swat at things inside this range
 const float CENTER_DIFF_CM      =  25.0;  // both sonars within this of each other = straight ahead
 const float APPROACH_FAST_CM_S  =  40.0;  // closing faster than this = WARN
+const float MIN_VALID_CM        =   3.0;  // the HC-SR04 can't measure closer; shorter readings are noise
+
+// For the first few seconds the nest learns how far away the walls,
+// tables and other things that never move are, and from then on only
+// reacts to things closer than that. Keep the area in front of the
+// sensors clear while it learns.
+const unsigned long SONAR_LEARN_MS = 10000;
+const float BACKGROUND_MARGIN_CM   = 30.0;   // must be this much closer than the background to count
 const unsigned long MOTION_PERSIST_MS = 4000;  // lingering motion -> WARN
 const unsigned long THREAT_HOLD_MS    = 4000;  // calm down one level after this
 
@@ -207,13 +215,19 @@ struct Sonar {
   float distanceCm;        // filtered distance, -1 = nothing in range
   float approachSpeed;     // cm/s, positive = getting closer
   unsigned long lastPingMs;
+  float background;        // distance to things that never move, -1 = open space
+  float learnSum;          // used while learning the background
+  uint16_t learnHits;
+  uint16_t learnPings;
 };
 enum { SONAR_LEFT, SONAR_RIGHT, NUM_SONARS };
 Sonar sonars[NUM_SONARS] = {
-  {PIN_US_LEFT_TRIG,  PIN_US_LEFT_ECHO,  {-1, -1, -1}, 0, -1, 0, 0},
-  {PIN_US_RIGHT_TRIG, PIN_US_RIGHT_ECHO, {-1, -1, -1}, 0, -1, 0, 0},
+  {PIN_US_LEFT_TRIG,  PIN_US_LEFT_ECHO,  {-1, -1, -1}, 0, -1, 0, 0, -1, 0, 0, 0},
+  {PIN_US_RIGHT_TRIG, PIN_US_RIGHT_ECHO, {-1, -1, -1}, 0, -1, 0, 0, -1, 0, 0, 0},
 };
+const char* const SONAR_NAME[NUM_SONARS] = {"Left", "Right"};
 uint8_t nextSonar = 0;
+bool sonarLearning = true;
 
 enum Mood { MOOD_CONTENT, MOOD_UNEASY, MOOD_DISTRESSED };
 const char* const MOOD_NAME[] = {"CONTENT", "UNEASY", "DISTRESSED"};
@@ -382,7 +396,9 @@ float pingDistanceCm(const Sonar& s) {
   digitalWrite(s.trigPin, LOW);
   unsigned long echoUs = pulseIn(s.echoPin, HIGH, 25000UL);  // ~4 m max
   if (echoUs == 0) return -1;
-  return echoUs / 58.0;
+  float cm = echoUs / 58.0;
+  if (cm < MIN_VALID_CM) return -1;   // a glitch, not a real echo
+  return cm;
 }
 
 // Ping one sonar per call. Taking turns stops one sensor from
@@ -394,9 +410,19 @@ void readNextSonar(unsigned long now) {
   s.history[s.historyIndex] = pingDistanceCm(s);
   s.historyIndex = (s.historyIndex + 1) % 3;
 
-  // Median of the last 3 pings rejects single bad echoes
-  float d = median3(s.history[0], s.history[1], s.history[2]);
+  // Median of the last 3 pings rejects single bad echoes. "No echo"
+  // counts as very far away, so it is filtered like any other reading.
+  const float FAR = 9999;
+  float d = median3(s.history[0] < 0 ? FAR : s.history[0],
+                    s.history[1] < 0 ? FAR : s.history[1],
+                    s.history[2] < 0 ? FAR : s.history[2]);
   if (d > ALERT_DIST_CM * 1.5) d = -1;  // too far away to matter
+
+  // Learn the background (walls, furniture) during the first seconds
+  if (sonarLearning) {
+    s.learnPings++;
+    if (d > 0) { s.learnSum += d; s.learnHits++; }
+  }
 
   // Approach speed, smoothed
   float dt = (now - s.lastPingMs) / 1000.0;
@@ -419,11 +445,42 @@ void readPirs(unsigned long now) {
   pirRight = digitalRead(PIN_PIR_RIGHT) == HIGH;
 }
 
+void finishSonarLearning(unsigned long now) {
+  if (!sonarLearning || now - bootMs < SONAR_LEARN_MS) return;
+  sonarLearning = false;
+  for (uint8_t i = 0; i < NUM_SONARS; i++) {
+    Sonar& s = sonars[i];
+    Serial.print(SONAR_NAME[i]);
+    Serial.print(F(" distance sensor: "));
+    if (s.learnPings == 0) {
+      Serial.println(F("no readings at all - check its wiring"));
+    } else if (s.learnHits * 2 >= s.learnPings) {
+      // Something was there most of the time: that's the background
+      s.background = s.learnSum / s.learnHits;
+      Serial.print(F("background is "));
+      Serial.print(s.background, 0);
+      Serial.print(F(" cm away, will react to things closer than "));
+      Serial.print(s.background - BACKGROUND_MARGIN_CM, 0);
+      Serial.println(F(" cm"));
+    } else {
+      Serial.println(F("open space in front, will react to anything within range"));
+    }
+  }
+}
+
+// Is this sonar seeing an intruder (something in range, and clearly
+// closer than the background)?
+bool sonarSees(const Sonar& s) {
+  if (sonarLearning) return false;
+  if (s.distanceCm <= 0 || s.distanceCm >= ALERT_DIST_CM) return false;
+  return s.background < 0 || s.distanceCm < s.background - BACKGROUND_MARGIN_CM;
+}
+
 void updateThreat(unsigned long now) {
   const Sonar& L = sonars[SONAR_LEFT];
   const Sonar& R = sonars[SONAR_RIGHT];
-  bool seenL = L.distanceCm > 0 && L.distanceCm < ALERT_DIST_CM;
-  bool seenR = R.distanceCm > 0 && R.distanceCm < ALERT_DIST_CM;
+  bool seenL = sonarSees(L);
+  bool seenR = sonarSees(R);
   bool seen = seenL || seenR;
 
   // Closest thing either sonar can see
@@ -617,6 +674,7 @@ void updateBuzzer(unsigned long now) {
 void printSonar(const Sonar& s) {
   if (s.distanceCm > 0) { Serial.print(s.distanceCm, 0); Serial.print(F("cm")); }
   else Serial.print(F("--"));
+  if (sonarSees(s)) Serial.print('!');   // ! = counts as an intruder
 }
 
 void printReport(unsigned long now) {
@@ -652,6 +710,7 @@ void printReport(unsigned long now) {
   Serial.print(pirLeft ? 'L' : '-');
   Serial.print(pirRight ? 'R' : '-');
   if (now - bootMs < PIR_WARMUP_MS) Serial.print(F("(warming)"));
+  if (sonarLearning) Serial.print(F(" sonar=learning"));
   Serial.print(F(" threat="));
   Serial.println(THREAT_NAME[threat]);
 }
@@ -712,7 +771,8 @@ void setup() {
 
   bootMs = millis();
   lastAnimMs = bootMs;
-  Serial.println(F("Awake. Motion sensors warming up for 60 s."));
+  Serial.println(F("Awake. Keep the area in front clear for 10 s while the distance sensors learn the room."));
+  Serial.println(F("Motion sensors warming up for 60 s."));
 }
 
 void loop() {
@@ -737,6 +797,7 @@ void loop() {
     readNextSonar(now);
   }
   readPirs(now);
+  finishSonarLearning(now);
   updateThreat(now);
 
   // --- Feel & act ---
