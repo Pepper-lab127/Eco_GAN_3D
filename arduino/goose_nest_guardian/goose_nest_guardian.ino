@@ -37,17 +37,19 @@
  *  ------------------------------------------------------------------
  *  HARDWARE (Arduino Uno / Nano / Mega)
  *  ------------------------------------------------------------------
- *    DHT11 temperature/humidity (S pin)  -> D2
- *    HC-SR501 PIR, LEFT  (OUT)           -> D4
- *    HC-SR501 PIR, RIGHT (OUT)           -> D5
- *    HC-SR04 ultrasonic LEFT  TRIG/ECHO  -> D6 / D7
- *    HC-SR04 ultrasonic RIGHT TRIG/ECHO  -> D8 / A3
- *    Servo feathers 0..4                 -> D3, D9, D10, D11, D12
+ *    Servo feathers 0..4 (signal)        -> D8, D9, D10, D11, D12
+ *    HC-SR04 ultrasonic LEFT  TRIG/ECHO  -> D7 / D6
+ *    HC-SR04 ultrasonic RIGHT TRIG/ECHO  -> D5 / D4
+ *    HC-SR501 PIR, LEFT  (OUT)           -> D3
+ *    HC-SR501 PIR, RIGHT (OUT)           -> D2
+ *    DHT11 temperature/humidity (S pin)  -> A3  (used as a digital pin)
  *    Photoresistor (LDR)                 -> A0  (LDR to 5V, 10k resistor
  *                                                to GND, junction to A0:
  *                                                brighter = higher)
  *    KY-037 sound sensor (AO pin)        -> A1
  *    Passive buzzer (optional)           -> A2
+ *
+ *  See wiring.html in this folder for the full wiring diagram.
  *
  *  Aim the two ultrasonic sensors about 30 degrees outward, one to the
  *  left and one to the right, so their beams overlap a little in front.
@@ -70,20 +72,20 @@
 // ===================================================================
 //  PINS
 // ===================================================================
-const uint8_t PIN_DHT          = 2;
-const uint8_t PIN_PIR_LEFT     = 4;
-const uint8_t PIN_PIR_RIGHT    = 5;
-const uint8_t PIN_US_LEFT_TRIG = 6;
-const uint8_t PIN_US_LEFT_ECHO = 7;
-const uint8_t PIN_US_RIGHT_TRIG = 8;
-const uint8_t PIN_US_RIGHT_ECHO = A3;
+const uint8_t PIN_DHT          = A3;
+const uint8_t PIN_PIR_LEFT     = 3;
+const uint8_t PIN_PIR_RIGHT    = 2;
+const uint8_t PIN_US_LEFT_TRIG = 7;
+const uint8_t PIN_US_LEFT_ECHO = 6;
+const uint8_t PIN_US_RIGHT_TRIG = 5;
+const uint8_t PIN_US_RIGHT_ECHO = 4;
 const uint8_t PIN_LIGHT        = A0;
 const uint8_t PIN_SOUND        = A1;
 const uint8_t PIN_BUZZER       = A2;
 const uint8_t PIN_RANDOM_SEED  = A5;   // leave unconnected
 
 const uint8_t NUM_FEATHERS = 5;
-const uint8_t PIN_FEATHER[NUM_FEATHERS] = {3, 9, 10, 11, 12};
+const uint8_t PIN_FEATHER[NUM_FEATHERS] = {8, 9, 10, 11, 12};
 
 #define DHT_TYPE DHT11
 #define USE_BUZZER 1          // set to 0 if you have no buzzer

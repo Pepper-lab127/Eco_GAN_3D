@@ -8,14 +8,16 @@ something approaches, the same feathers rise up, rattle and swat at it.
 
 | Part | Pin |
 |---|---|
-| DHT11 temperature/humidity (S) | D2 |
-| HC-SR501 motion sensor: left / right (OUT) | D4 / D5 |
-| HC-SR04 distance sensor, left (TRIG / ECHO) | D6 / D7 |
-| HC-SR04 distance sensor, right (TRIG / ECHO) | D8 / A3 |
-| 5 servos (far left → far right) | D3, D9, D10, D11, D12 |
+| 5 servos, signal (far left → far right) | D8, D9, D10, D11, D12 |
+| HC-SR04 distance sensor, left (TRIG / ECHO) | D7 / D6 |
+| HC-SR04 distance sensor, right (TRIG / ECHO) | D5 / D4 |
+| HC-SR501 motion sensor: left / right (OUT) | D3 / D2 |
 | Photoresistor + 10k divider | A0 |
 | KY-037 sound sensor (AO) | A1 |
 | Passive buzzer (optional) | A2 |
+| DHT11 temperature/humidity (S) | A3 |
+
+Open `wiring.html` in a browser for the full wiring diagram.
 
 Every sensor's VCC goes to the Arduino's 5V and its GND to GND. The KY-037's DO
 pin is not used.
