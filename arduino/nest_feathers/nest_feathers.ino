@@ -5,11 +5,13 @@
 const int TRIG_PIN = 7;
 const int ECHO_PIN = 6;
 const int SOUND_PIN = A1;
+const int LIGHT_PIN = A0;
 const int DHT_PIN = A3;
 const int DISTANCE_SERVO_PIN = 8;
 const int SOUND_SERVO_PIN = 9;
 const int TEMP_SERVO_PIN = 10;
 const int HUM_SERVO_PIN = 11;
+const int LIGHT_SERVO_PIN = 12;
 
 // ---------------- Distance feather ----------------
 const float MAX_DISTANCE = 70;     // cm: anything farther away -> rest position
@@ -28,6 +30,11 @@ const float HUM_REST  = 35.0;      // at or below this -> 90 degrees
 const float HUM_MAX   = 80.0;      // at or above this -> 180 degrees
 const float DHT_SMOOTHING = 0.15;  // 0..1: how quickly they glide to a new reading
 
+// ---------------- Light feather ----------------
+const int LIGHT_DARK   = 450;      // at or below this -> 90 degrees (your hand covering it)
+const int LIGHT_BRIGHT = 1000;     // at or above this -> 180 degrees (your flashlight)
+const float LIGHT_SMOOTHING = 0.2; // 0..1: lower = smoother but slower
+
 // ---------------- All feathers ----------------
 const int REST_ANGLE = 90;
 const int MAX_ANGLE  = 180;
@@ -41,18 +48,21 @@ Servo distanceFeather;
 Servo soundFeather;
 Servo tempFeather;
 Servo humFeather;
+Servo lightFeather;
 
 // Where each feather is heading (smoothed)
 float distanceAngle = REST_ANGLE;
 float soundAngle = REST_ANGLE;
 float tempAngle = REST_ANGLE;
 float humAngle = REST_ANGLE;
+float lightAngle = REST_ANGLE;
 
 // The angle last sent to each servo
 int distanceServo = REST_ANGLE;
 int soundServo = REST_ANGLE;
 int tempServo = REST_ANGLE;
 int humServo = REST_ANGLE;
+int lightServo = REST_ANGLE;
 
 float temperature = TEMP_REST;
 float humidity = HUM_REST;
@@ -115,10 +125,12 @@ void setup() {
   soundFeather.attach(SOUND_SERVO_PIN);
   tempFeather.attach(TEMP_SERVO_PIN);
   humFeather.attach(HUM_SERVO_PIN);
+  lightFeather.attach(LIGHT_SERVO_PIN);
   distanceFeather.write(REST_ANGLE);
   soundFeather.write(REST_ANGLE);
   tempFeather.write(REST_ANGLE);
   humFeather.write(REST_ANGLE);
+  lightFeather.write(REST_ANGLE);
 
   lastLoop = millis();
 }
@@ -155,19 +167,22 @@ void loop() {
     if (!isnan(h)) humidity = h;
   }
 
+  // 3. Read the light level (0 = dark ... 1023 = very bright)
+  int light = analogRead(LIGHT_PIN);
+
   // How long this loop took, for the sound feather's fall speed
   unsigned long now = millis();
   float seconds = (now - lastLoop) / 1000.0;
   lastLoop = now;
 
-  // 3. Distance feather: 70 cm -> 90 degrees ... 5 cm -> 180, eased
+  // 4. Distance feather: 70 cm -> 90 degrees ... 5 cm -> 180, eased
   float distanceTarget = REST_ANGLE;   // nothing within 70 cm
   if (distance <= MAX_DISTANCE) {
     distanceTarget = toAngle(distance, MAX_DISTANCE, MIN_DISTANCE);
   }
   distanceAngle = distanceAngle + (distanceTarget - distanceAngle) * DISTANCE_SMOOTHING;
 
-  // 4. Sound feather: jump up on a loud sound, then sink back slowly
+  // 5. Sound feather: jump up on a loud sound, then sink back slowly
   float soundTarget = toAngle(loudness, QUIET_LOUDNESS, LOUD_LOUDNESS);
   if (soundTarget > soundAngle) {
     soundAngle = soundTarget;
@@ -176,17 +191,21 @@ void loop() {
     if (soundAngle < soundTarget) soundAngle = soundTarget;
   }
 
-  // 5. Temperature and humidity feathers: glide toward the latest reading
+  // 6. Temperature and humidity feathers: glide toward the latest reading
   tempAngle = tempAngle + (toAngle(temperature, TEMP_REST, TEMP_MAX) - tempAngle) * DHT_SMOOTHING;
   humAngle  = humAngle  + (toAngle(humidity,    HUM_REST,  HUM_MAX)  - humAngle)  * DHT_SMOOTHING;
 
-  // 6. Move the servos
+  // 7. Light feather: dark -> 90 degrees ... bright -> 180, eased
+  lightAngle = lightAngle + (toAngle(light, LIGHT_DARK, LIGHT_BRIGHT) - lightAngle) * LIGHT_SMOOTHING;
+
+  // 8. Move the servos
   moveFeather(distanceFeather, distanceAngle, distanceServo);
   moveFeather(soundFeather, soundAngle, soundServo);
   moveFeather(tempFeather, tempAngle, tempServo);
   moveFeather(humFeather, humAngle, humServo);
+  moveFeather(lightFeather, lightAngle, lightServo);
 
-  // 7. Print what's happening
+  // 9. Print what's happening
   Serial.print("dist: ");
   if (distance == NOTHING) Serial.print("none");
   else Serial.print(distance, 0);
@@ -203,5 +222,9 @@ void loop() {
   Serial.print("  | hum: ");
   Serial.print(humidity, 0);
   Serial.print(" -> ");
-  Serial.println(humServo);
+  Serial.print(humServo);
+  Serial.print("  | light: ");
+  Serial.print(light);
+  Serial.print(" -> ");
+  Serial.println(lightServo);
 }
