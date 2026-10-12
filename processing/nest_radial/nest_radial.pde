@@ -14,7 +14,11 @@
  * After five minutes it stops and saves a high-resolution PNG and a vector
  * PDF into the "exports" folder next to this sketch.
  *
+ * At every minute the actual temperature and humidity are written in small
+ * type beside their rings, and the title block lists their range.
+ *
  * Keys:  R = restart   S = save now   D = switch demo mode on/off
+ *        Esc = quit (when full screen)
  *
  * The Arduino must run nest_feathers.ino with SEND_TO_PROCESSING = true,
  * and the Arduino IDE's Serial Monitor must be closed.
@@ -28,7 +32,7 @@ String  PORT_NAME = "";         // e.g. "COM3" or "/dev/cu.usbmodem14101"; "" = 
 int     BAUD = 9600;
 boolean DEMO = false;           // true = invent readings, no Arduino needed
 float   DURATION = 300;         // seconds for one full turn (300 = 5 minutes)
-float   DISPLAY_SCALE = 0.6;    // window size: 1.0 = 1400 x 1600 pixels
+boolean FULL_SCREEN = true;     // false = a window 90% of the screen's height
 int     EXPORT_SCALE = 3;       // PNG size: 3 = 4200 x 4800 pixels
 
 // Sensor ranges, the same as in the Arduino sketch
@@ -37,6 +41,10 @@ float HUM_LOW   = 35,  HUM_HIGH   = 80;     // %
 float LIGHT_LOW = 450, LIGHT_HIGH = 1000;   // raw reading
 float SOUND_LOW = 20,  SOUND_HIGH = 200;    // loudness
 float NEAR_FAR  = 70,  NEAR_CLOSE = 5;      // cm
+
+// Title block
+String TITLE = "Sensor Map";
+String LOCATION = "Lockport, MB: 50.08995° N, 96.93503° W";
 
 // Colours
 color PAPER = color(247, 245, 240);
@@ -86,15 +94,26 @@ String savedName = "";
 String portText = "";
 Sample latest;
 float demoTime = 0;
+float tempMin, tempMax, humMin, humMax;   // range of the readings so far
+float viewScale, viewX, viewY;            // how the drawing fits the window
 float demoNearStart = -100;
 
 // ---------------- Setup ----------------
 void settings() {
-  size(round(W * DISPLAY_SCALE), round(H * DISPLAY_SCALE));
+  if (FULL_SCREEN) {
+    fullScreen();
+  } else {
+    size(round(displayHeight * 0.9 * W / H), round(displayHeight * 0.9));
+  }
   smooth(8);
 }
 
 void setup() {
+  // Fit the 1400 x 1600 drawing into the window, centred
+  viewScale = min(width / W, height / H) * 0.97;
+  viewX = (width - W * viewScale) / 2;
+  viewY = (height - H * viewScale) / 2;
+
   font = createFont("Serif", 32);
   grid = createGraphics(width, height);
   marks = createGraphics(width, height);
@@ -136,11 +155,13 @@ void restart() {
   demoTime = 0;
   demoNearStart = -100;
   noiseSeed((int) random(100000));
+  tempMin = humMin = Float.MAX_VALUE;
+  tempMax = humMax = -Float.MAX_VALUE;
   dateText = nf(day(), 2) + "." + nf(month(), 2) + "." + year() + "   " + nf(hour(), 2) + ":" + nf(minute(), 2);
 
   grid.beginDraw();
   grid.pushMatrix();
-  grid.scale(DISPLAY_SCALE);
+  applyView(grid);
   drawPaperAndGrid(grid);
   grid.popMatrix();
   grid.endDraw();
@@ -207,12 +228,16 @@ void draw() {
   if (fresh.size() > 0) {
     marks.beginDraw();
     marks.pushMatrix();
-    marks.scale(DISPLAY_SCALE);
+    applyView(marks);
     for (Sample s : fresh) {
       Sample prev = samples.size() > 0 ? samples.get(samples.size() - 1) : null;
       drawSample(marks, prev, s);
       samples.add(s);
       latest = s;
+      tempMin = min(tempMin, s.temp);
+      tempMax = max(tempMax, s.temp);
+      humMin = min(humMin, s.hum);
+      humMax = max(humMax, s.hum);
     }
     marks.popMatrix();
     marks.endDraw();
@@ -220,6 +245,15 @@ void draw() {
 
   if (!finished && elapsed() >= DURATION) {
     finished = true;
+    // Write the final values at the end of the turn
+    if (latest != null) {
+      marks.beginDraw();
+      marks.pushMatrix();
+      applyView(marks);
+      drawValues(marks, latest);
+      marks.popMatrix();
+      marks.endDraw();
+    }
     saveRecord();
   }
 
@@ -227,10 +261,17 @@ void draw() {
   image(marks, 0, 0);
 
   pushMatrix();
-  scale(DISPLAY_SCALE);
+  applyView(g);
   if (!finished) drawCursor(g, elapsed());
-  drawReadout(g);
+  drawSummary(g);
   popMatrix();
+  drawReadout(g);
+}
+
+// Place the 1400 x 1600 drawing in the window
+void applyView(PGraphics g) {
+  g.translate(viewX, viewY);
+  g.scale(viewScale);
 }
 
 // Angle around the circle for a time in seconds
@@ -247,6 +288,9 @@ float norm01(float v, float low, float high) {
 // Draw one reading. prev is the reading before it (or null), for the temperature line.
 void drawSample(PGraphics g, Sample prev, Sample s) {
   float a = angleAt(s.t);
+  // At each new minute, write the actual temperature and humidity
+  if (prev == null || floor(prev.t / 60) != floor(s.t / 60)) drawValues(g, s);
+
   g.pushMatrix();
   g.translate(CX, CY);
 
@@ -377,7 +421,7 @@ void drawPaperAndGrid(PGraphics g) {
   // Ring names, set in the open wedge
   g.textSize(9);
   g.fill(INK, 150);
-  g.text("NEAR", 0, -R_NEAR_IN);
+  g.text("NEAR", 0, -(R_NEAR_IN - 12));
   g.text("TEMP", 0, -R_TEMP);
   g.text("HUMIDITY", 0, -(R_HUM_IN + R_HUM_OUT) / 2);
   g.text("LIGHT", 0, -(R_LIGHT_IN + R_LIGHT_OUT) / 2);
@@ -388,12 +432,58 @@ void drawPaperAndGrid(PGraphics g) {
   g.textAlign(CENTER, BASELINE);
   g.fill(INK);
   g.textSize(28);
-  g.text("Nest Record", CX, 1470);
+  g.text(TITLE, CX, 1470);
   g.fill(INK, 170);
   g.textSize(14);
-  g.text(dateText + "   ·   " + int(DURATION / 60) + " minutes   ·   Canada goose nest", CX, 1500);
+  g.text(dateText + "   ·   " + int(DURATION / 60) + " minutes   ·   " + LOCATION, CX, 1500);
   g.textSize(10);
-  g.text("inner to outer:  proximity  ·  temperature  ·  humidity  ·  light  ·  sound", CX, 1526);
+  g.text("inner to outer:  proximity  ·  temperature  ·  humidity  ·  light  ·  sound", CX, 1546);
+}
+
+// Actual temperature and humidity in small type beside their rings
+void drawValues(PGraphics g, Sample s) {
+  float a = angleAt(s.t);
+  g.pushMatrix();
+  g.translate(CX, CY);
+
+  // small ticks pointing at the rings
+  g.stroke(INK, 130);
+  g.strokeWeight(0.5);
+  g.line(cos(a) * (R_TEMP - 8), sin(a) * (R_TEMP - 8), cos(a) * (R_TEMP - 12), sin(a) * (R_TEMP - 12));
+  g.line(cos(a) * (R_HUM_OUT + 2), sin(a) * (R_HUM_OUT + 2), cos(a) * (R_HUM_OUT + 6), sin(a) * (R_HUM_OUT + 6));
+
+  // The numbers run along the spoke, so they never cross a ring
+  g.textFont(font);
+  g.textSize(11);
+  g.noStroke();
+  g.fill(INK, 200);
+  radialText(g, nf(s.temp, 0, 1) + "°", a, R_TEMP - 14, false);   // inside the temperature line
+  radialText(g, round(s.hum) + "%", a, R_HUM_OUT + 8, true);       // outside the humidity band
+  g.popMatrix();
+}
+
+// Text laid along a spoke at angle a, starting (outward) or ending (inward)
+// at radius r, turned so it never reads upside down
+void radialText(PGraphics g, String txt, float a, float r, boolean outward) {
+  g.pushMatrix();
+  g.rotate(a);
+  g.translate(r, 0);
+  boolean flip = cos(a) < 0;
+  if (flip) g.rotate(PI);
+  g.textAlign(outward != flip ? LEFT : RIGHT, CENTER);
+  g.text(txt, 0, 0);
+  g.popMatrix();
+}
+
+// One line in the title block with the range of temperature and humidity
+void drawSummary(PGraphics g) {
+  if (samples.size() == 0) return;
+  g.textFont(font);
+  g.textAlign(CENTER, BASELINE);
+  g.textSize(11);
+  g.fill(INK, 190);
+  g.text("temperature  " + nf(tempMin, 0, 1) + " – " + nf(tempMax, 0, 1) + " °C      ·      humidity  "
+    + round(humMin) + " – " + round(humMax) + " %", CX, 1524);
 }
 
 // The red line showing "now" (screen only)
@@ -408,24 +498,24 @@ void drawCursor(PGraphics g, float t) {
 void drawReadout(PGraphics g) {
   g.textFont(font);
   g.textAlign(LEFT, BASELINE);
-  g.textSize(13);
+  g.textSize(14);
   g.fill(INK, 160);
   float t = min(elapsed(), DURATION);
   String mode = DEMO ? "DEMO" : "LIVE " + portText;
-  g.text(mode + "   " + nf(int(t) / 60, 1) + ":" + nf(int(t) % 60, 2) + " / " + nf(int(DURATION) / 60, 1) + ":" + nf(int(DURATION) % 60, 2), 40, 50);
+  g.text(mode + "   " + nf(int(t) / 60, 1) + ":" + nf(int(t) % 60, 2) + " / " + nf(int(DURATION) / 60, 1) + ":" + nf(int(DURATION) % 60, 2), 24, 36);
   if (latest != null) {
     String near = latest.dist > 0 ? round(latest.dist) + " cm" : "-";
     g.text("temp " + nf(latest.temp, 0, 1) + " C   humidity " + round(latest.hum) + " %   light " + int(latest.light)
-      + "   sound " + int(latest.sound) + "   near " + near, 40, 72);
+      + "   sound " + int(latest.sound) + "   near " + near, 24, 58);
   } else if (!DEMO) {
-    g.text("waiting for data from the Arduino...", 40, 72);
+    g.text("waiting for data from the Arduino...", 24, 58);
   }
   if (finished) {
     g.fill(RED);
-    g.text("Complete. Saved " + savedName + ".png / .pdf    R = restart", 40, 94);
+    g.text("Complete. Saved " + savedName + ".png / .pdf    R = restart", 24, 80);
   }
   g.fill(INK, 110);
-  g.text("R restart   S save   D demo", 40, H - 40);
+  g.text("R restart   S save   D demo   Esc quit", 24, height - 24);
 }
 
 // ---------------- Saving ----------------
@@ -461,6 +551,8 @@ void renderAll(PGraphics g) {
     drawSample(g, prev, s);
     prev = s;
   }
+  if (prev != null) drawValues(g, prev);   // the latest values at the end of the record
+  drawSummary(g);
 }
 
 // ---------------- Keys ----------------
