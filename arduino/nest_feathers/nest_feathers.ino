@@ -40,6 +40,12 @@ const int REST_ANGLE = 90;
 const int MAX_ANGLE  = 180;
 const int DEAD_BAND  = 2;          // only move a servo if its angle changes this much
 
+// ---------------- Serial output ----------------
+// true  = send plain numbers for the Processing visualization:
+//         distance,loudness,temperature,humidity,light   (distance is -1 when nothing is there)
+// false = print readable text for the Serial Monitor
+const bool SEND_TO_PROCESSING = true;
+
 const int SAMPLES = 5;             // distance readings per loop (the middle one is used)
 const float NOTHING = 999;         // stands for "no echo"
 
@@ -205,7 +211,22 @@ void loop() {
   moveFeather(humFeather, humAngle, humServo);
   moveFeather(lightFeather, lightAngle, lightServo);
 
-  // 9. Print what's happening
+  // 9. Send the readings
+  if (SEND_TO_PROCESSING) {
+    // One line of numbers, e.g. "-1,12,21.9,31,840"
+    if (distance == NOTHING) Serial.print(-1);
+    else Serial.print(distance, 1);
+    Serial.print(',');
+    Serial.print(loudness);
+    Serial.print(',');
+    Serial.print(temperature, 1);
+    Serial.print(',');
+    Serial.print(humidity, 1);
+    Serial.print(',');
+    Serial.println(light);
+    return;
+  }
+
   Serial.print("dist: ");
   if (distance == NOTHING) Serial.print("none");
   else Serial.print(distance, 0);
