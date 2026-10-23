@@ -25,17 +25,30 @@ INK_LIGHT = "#f4f4f2"
 
 def build(args):
     if args.csv:
+        if args.param is None:
+            # Use discharge when the file has it, otherwise water level.
+            try:
+                hydrometric.load_wsc_daily(args.csv, "discharge")
+                args.param = "discharge"
+            except ValueError:
+                args.param = "level"
         dates, values, syms = hydrometric.load_wsc_daily(args.csv, args.param)
-        source = os.path.basename(args.csv)
+        station = hydrometric.station_id(args.csv)
+        source = (f"WATER SURVEY OF CANADA, STATION {station}" if station else os.path.basename(args.csv)) \
+            + f", {dates[0].isoformat()} TO {dates[-1].isoformat()}"
         placeholder = False
     else:
+        args.param = args.param or "discharge"
         if args.param != "discharge":
             raise SystemExit("Placeholder data is discharge only; pass --csv for water level.")
         dates, values, syms = hydrometric.placeholder_daily()
         source = "PLACEHOLDER — SYNTHETIC SERIES, NOT OBSERVED DATA"
         placeholder = True
 
-    years, rows = hydrometric.water_year_matrix(dates, values)
+    years, rows = hydrometric.water_year_matrix(dates, values, min_coverage=args.min_coverage)
+    if not years:
+        raise SystemExit(f"No water year has {args.min_coverage:.0%} of days recorded; lower --min-coverage.")
+    unrecorded = np.isnan(rows).all(axis=0)
     breakup, freezeup = hydrometric.median_ice_dates(dates, syms)
     phases = seasons.phases_with_ice_dates(breakup, freezeup)
     units = hydrometric.UNITS[args.param]
@@ -51,15 +64,23 @@ def build(args):
     xs = axis.x(np.arange(365))
 
     n = len(years)
-    step = (bottom - top) / max(n - 1, 1)
-    baselines = top + np.arange(n) * step
-
     if args.param == "level":
         floor = np.nanmin(rows)
         rows = rows - floor
     vmax = np.nanmax(rows)
     scale = amp / vmax
 
+    # Push the stack down until no crest rises above the title block.
+    ceiling = m + 50.0
+    row_max = np.nan_to_num(np.nanmax(rows, axis=1)) * scale
+    for _ in range(100):
+        step = (bottom - top) / max(n - 1, 1)
+        top = max(m + 70.0, ceiling + np.max(row_max - np.arange(n) * step))
+    if bottom - top < 0.4 * (bottom - m - 70.0):
+        print("note: crests are tall for this record; try a smaller --amplitude")
+    baselines = top + np.arange(n) * step
+
+    decimals = 2 if args.param == "level" else 0
     peaks = sorted(range(n), key=lambda i: -np.nanmax(rows[i]))[: args.flags]
 
     svg = Svg(W, H, background="#ffffff")
@@ -79,6 +100,10 @@ def build(args):
             d = points_to_path(xs, ys, close_to=baselines[i] + 0.01)
             svg.path(d, fill=ground, stroke=ink, stroke_width=args.line,
                      stroke_linejoin="round")
+            # Days without a record run as a dotted line at the year's base.
+            gap = np.where(np.isnan(rows[i]), baselines[i], np.nan)
+            svg.path(points_to_path(xs, gap), fill="none", stroke=ink, stroke_width=args.line,
+                     stroke_dasharray="0.15 0.9", stroke_linecap="round", opacity=0.8)
 
         # Year labels every decade.
         for i, y in enumerate(years):
@@ -102,7 +127,7 @@ def build(args):
             k = int(np.nanargmax(rows[i]))
             x, y = xs[k], baselines[i] - rows[i][k] * scale
             peak_val = rows[i][k] + (floor if args.param == "level" else 0)
-            label = f"{years[i]} · {peak_val:,.0f} {units} · {seasons.day_label(k)}"
+            label = f"{years[i]} · {peak_val:,.{decimals}f} {units} · {seasons.day_label(k)}"
             svg.circle(x, y, 0.45, fill=ink)
             flag(svg, x, y, label, dx=px1 - x + 6, color=ink, size=1.8)
 
@@ -113,7 +138,7 @@ def build(args):
         svg.line(sx, sy, sx, sy - h, stroke=ink, stroke_width=0.15)
         svg.line(sx - 1, sy, sx + 1, sy, stroke=ink, stroke_width=0.15)
         svg.line(sx - 1, sy - h, sx + 1, sy - h, stroke=ink, stroke_width=0.15)
-        svg.text(sx + 2, sy - h / 2, f"{unit_step:,.0f} {units}", size=1.8, fill=ink)
+        svg.text(sx + 2, sy - h / 2, f"{unit_step:,.{decimals}f} {units}", size=1.8, fill=ink)
 
         # Title block.
         tx, ty = m + 10, frame_y0 + 14
@@ -127,9 +152,17 @@ def build(args):
                  size=1.9, fill=ink)
         svg.text(tx, ty + 20, f"SOURCE: {source}", size=1.7, fill=ink,
                  weight="bold" if placeholder else None, opacity=1 if placeholder else 0.7)
+        notes = []
+        if args.param == "level":
+            notes.append(f"Lines rise from the lowest recorded level, {floor:.2f} m above station datum.")
         if breakup:
-            svg.text(tx, ty + 23, f"BREAK-UP placed from median end of ice flags: {seasons.day_label(axis.day_edges[2])}",
-                     size=1.7, fill=ink, opacity=0.7)
+            notes.append(f"BREAK-UP placed from median end of ice flags: {seasons.day_label(axis.day_edges[2])}.")
+        else:
+            notes.append("Phase dates are typical for the Red River, not derived from this record.")
+        if unrecorded.any() or np.isnan(rows).mean() > 0.05:
+            notes.append("Dotted: no record (the gauge reports open-water season only, or data is missing).")
+        for j, note in enumerate(notes):
+            svg.text(tx, ty + 23 + 3 * j, note, size=1.7, fill=ink, opacity=0.7)
 
         svg.close_group()
 
@@ -153,7 +186,10 @@ def _nice(v):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", help="Water Survey of Canada daily CSV (omit for placeholder data)")
-    ap.add_argument("--param", choices=["discharge", "level"], default="discharge")
+    ap.add_argument("--param", choices=["discharge", "level"],
+                    help="default: discharge if the CSV has it, else level")
+    ap.add_argument("--min-coverage", type=float, default=0.4,
+                    help="fraction of days a water year needs to be drawn")
     ap.add_argument("--paper", choices=list(PAPER), default="A2")
     ap.add_argument("--amplitude", type=float, default=95.0, help="mm height of the record maximum")
     ap.add_argument("--line", type=float, default=0.12, help="line weight in mm")

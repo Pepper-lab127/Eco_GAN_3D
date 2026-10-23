@@ -3,6 +3,7 @@ generator for building sheets before real data is downloaded."""
 
 import csv
 import datetime as dt
+import re
 
 import numpy as np
 
@@ -99,11 +100,23 @@ def placeholder_daily(first_year=1962, last_year=2025, seed=7):
     return dates, values, syms
 
 
-def water_year_matrix(dates, values, start_month=11, start_day=1):
+def station_id(path):
+    """Station ID from the first data row of a WSC CSV, or None."""
+    with open(path, encoding="utf-8-sig") as f:
+        for line in f:
+            m = re.match(r"\s*([0-9]{2}[A-Z]{2}[0-9]{3}),", line.lstrip("\ufeff"))
+            if m:
+                return m.group(1)
+    return None
+
+
+def water_year_matrix(dates, values, start_month=11, start_day=1, min_coverage=0.7):
     """Arrange a daily series into rows of 365 days, one per water year.
 
     Water year Y runs from start_month/start_day of Y-1 to the day before in Y.
     Feb 29 is dropped so every row lines up by calendar day.
+    Years with less than min_coverage of days recorded are dropped; use a low
+    value for seasonal (open-water only) gauges.
     Returns (years, array[n_years, 365]) with NaN for missing days.
     """
     by_date = dict(zip(dates, values))
@@ -121,8 +134,7 @@ def water_year_matrix(dates, values, start_month=11, start_day=1):
                     out[r, k] = v
                 k += 1
             d += dt.timedelta(days=1)
-    # Keep only years that are mostly complete.
-    keep = np.mean(np.isnan(out), axis=1) < 0.3
+    keep = np.mean(~np.isnan(out), axis=1) >= min_coverage
     return [y for y, ok in zip(years, keep) if ok], out[keep]
 
 
