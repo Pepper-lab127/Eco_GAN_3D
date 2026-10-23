@@ -111,6 +111,14 @@ gathered along each day's water's edge):
 
 python -m sheets.flood_particles
 
+The 1974 flood, the one year with the floodway's own measured flow (05OJ014);
+the level above the dam is estimated from James Avenue (05OJ015):
+
+python -m sheets.flood_particles --start 1974-04-01 --end 1974-06-30 --floodway-flow data/lockport/daily_05OJ014.csv
+
+Both default to Arch D (36 x 24 in) at 1:4,000. A request for the 1997
+floodway records is drafted in `docs/data_request_1997_floodway.md`.
+
 Sheet 03, hydrograph surface:
 
 python -m sheets.hydrograph_surface --csv data/lockport/daily.csv

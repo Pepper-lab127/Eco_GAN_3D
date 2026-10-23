@@ -199,3 +199,29 @@ def fit_rating(dates_q, flows, syms_q, dates_h, levels, min_flow=50.0):
         return float(coef[0] + coef[1] * lx + coef[2] * lx * lx)
 
     return rating, rmse, (float(q.min()), float(q.max()))
+
+
+def binned_relation(x, y, lo, step=0.25, min_count=3):
+    """Monotone relation y(x) from binned medians for x >= lo.
+
+    Robust where a plain curve is pulled by outliers (e.g. days when a dam,
+    not the flow, sets the level). Returns (f(x) -> y, typical spread of y
+    about the relation in m, (lowest, highest) x fitted); f is None below lo.
+    """
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    keep = x >= lo
+    x, y = x[keep], y[keep]
+    edges = np.arange(lo, x.max() + step, step)
+    centres, medians, spreads = [], [], []
+    for a, b in zip(edges[:-1], edges[1:]):
+        sel = (x >= a) & (x < b)
+        if sel.sum() >= min_count:
+            centres.append(np.median(x[sel]))
+            medians.append(np.median(y[sel]))
+            spreads.append(np.percentile(y[sel], 75) - np.percentile(y[sel], 25))
+    centres, medians = np.array(centres), np.maximum.accumulate(medians)
+
+    def f(v):
+        return float(np.interp(v, centres, medians)) if v >= lo else None
+
+    return f, float(np.median(spreads) / 1.35), (float(x.min()), float(x.max()))
