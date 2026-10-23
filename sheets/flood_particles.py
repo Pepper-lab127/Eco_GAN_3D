@@ -282,6 +282,7 @@ def build(args):
     pw, ph = W * s, H * s
 
     svg = Svg(Wp, Hp)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     tw = args.graph                             # timeline tick weight, mm
     clip = svg.clip_rect(x0, y0, pw, ph)
 
@@ -297,7 +298,6 @@ def build(args):
         bed=f"PLAN · FLOODWAY BED, DOTTED · {mm(0.1)}",
         dots=f"PLAN · DOTS · {mm(args.dot)}",
         fwdots=f"PLAN · FLOODWAY WATER DOTS, GREY · {mm(args.dot)}",
-        fwlines=f"PLAN · FLOODWAY FLOW PATHS · {mm(0.05)}",
         first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
         crest=f"PLAN · CREST EDGES · {mm(0.12)}",
         dam=f"PLAN · DAM AND LOCK · {mm(0.35)}",
@@ -318,7 +318,8 @@ def build(args):
         svg.open_group(clip_path=clip)
 
     svg.layer(L["frame"])
-    svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
 
     # Ground: faint contours of the river valley, one per metre.
     for lv, lines in terrain.smooth_contours(a, np.arange(216, 232, 1.0)).items():
@@ -356,15 +357,11 @@ def build(args):
     svg.path(d, fill="none", stroke=INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.85)
     svg.close_group()
 
-    # The floodway's water: grey dots along its flow paths, the paths faint.
+    # The floodway's water: grey dots along its flow paths (the paths themselves not drawn).
     if len(fx_all):
         plan("fwdots")
         d = "".join(f"M{x0 + x * s:.2f},{y0 + y * s:.2f}h0" for x, y in zip(fx_all, fy_all))
         svg.path(d, fill="none", stroke=FW_INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.9)
-        svg.close_group()
-        plan("fwlines")
-        svg.path(" ".join(points_to_path(x0 + (cc + 0.5) * s, y0 + (rr + 0.5) * s) for rr, cc, _ in fw_lines),
-                 fill="none", stroke=INK, stroke_width=0.05, opacity=0.6)
         svg.close_group()
 
     # Hairlines: each reach's first and highest edges.
@@ -405,10 +402,10 @@ def build(args):
     qmax = max(flow.values())
     svg.layer(L["text"])
     svg.text(tx, y0 - 7, "DAILY FLOW PASSING LOCKPORT", size=2.6, fill=INK, spacing=0.25)
-    svg.text(tx, y0 - 3, f"STATION {hydrometric.station_id(args.flow_csv)} · ONE TICK PER DAY",
+    annot(tx, y0 - 3, f"STATION {hydrometric.station_id(args.flow_csv)} · ONE TICK PER DAY",
              size=2.0, fill=INK, opacity=0.75)
     if fw_flow:
-        svg.text(tx, y0 + ph + 16, "HEAVY: THE FLOODWAY'S SHARE " + (f"({hydrometric.station_id(args.floodway_flow)})"
+        annot(tx, y0 + ph + 16, "HEAVY: THE FLOODWAY'S SHARE " + (f"({hydrometric.station_id(args.floodway_flow)})"
                  if args.floodway_flow else "(ESTIMATED)"),
                  size=2.0, fill=INK, opacity=0.85)
     svg.layer(L["axis"])
@@ -455,8 +452,8 @@ def build(args):
     n = len(xs_all)
     svg.layer(L["text"])
     tx0, ty0 = m + 8, m + 12
-    svg.text(tx0, ty0, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
-    svg.text(tx0, ty0 + 7, f"THE {start.year} FLOOD — EACH DOT {args.volume:,.0f} M³ OF WATER, "
+    annot(tx0, ty0, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
+    annot(tx0, ty0 + 7, f"THE {start.year} FLOOD — EACH DOT {args.volume:,.0f} M³ OF WATER, "
              f"{start.strftime('%b %d').upper()} – {end.strftime('%b %d').upper()}, 1:{args.scale:,}",
              size=2.4, fill=INK, spacing=0.3)
     side = round(args.volume ** (1 / 3))
@@ -474,7 +471,7 @@ def build(args):
                        f"the floodway took {fw_est['k']:.2f} of Lockport's flow above {fw_est['q0']:,.0f} m³/s "
                        f"(±{fw_est['rmse']:.0f} m³/s); that gives a {fw_est['fit_peak']:,.0f} m³/s peak, scaled "
                        f"×{fw_est['scale']:.2f} to the published {args.floodway_peak:,.0f} m³/s, on {fw_peak.strftime('%b %d')}.")
-        fw_note = [fw_note, ("Grey dots: each day's floodway share, laid along its flow paths (fine lines) "
+        fw_note = [fw_note, ("Grey dots: each day's floodway share, laid along its flow paths "
                     "from the channel through the outlet into the Red, solved by "
                     f"conveyance on its peak day with the channel {args.floodway_depth:g} m deep over its bed (assumed); "
                     "the river gets the rest." if fw_lines else
@@ -507,7 +504,7 @@ def build(args):
         + "; NRCan HRDEM lidar DTM. Levels applied without datum adjustment; the lidar cannot see under water.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx0, ty0 + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 7 else 0.65)
+        annot(tx0, ty0 + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 7 else 0.65)
 
     svg.layer(L["scale"])
     sb_y = Hp - m - 9
@@ -573,6 +570,8 @@ def main():
     ap.add_argument("--label", nargs=4, action="append", metavar=("TEXT", "ROW", "COL", "ANGLE"))
     ap.add_argument("--scale", type=int, default=4000)
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", help="default: outputs/sheets/05_flood_particles_<year>.svg")
     args = ap.parse_args()
     if args.out is None:

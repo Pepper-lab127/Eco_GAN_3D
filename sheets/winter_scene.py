@@ -516,6 +516,7 @@ def build(args):
 
     # ------------------------------------------------------------ data overlay
     svg = Svg(Wp, Hp, background=None)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     L = dict(render="RENDER (RASTER COMPOSITE)", water="DATA · WATER SURFACES, EVERY DAY · 0.04 mm",
              ice="DATA · UNDERSIDE OF THE ICE, EVERY DAY · 0.04 mm", bed="DATA · RIVERBED (CHART), DASHED · 0.12 mm",
              cut="DATA · GROUND (LIDAR) · 0.12 mm", datum="DATUM TICKS · 0.1 mm", fishlab="FISH LABELS · 0.06 mm",
@@ -570,8 +571,8 @@ def build(args):
 
     # Title and a short caption, top left; section letters.
     svg.layer(L["text"])
-    svg.text(14, 18, "THE RIVER IN WINTER", size=6.0, fill=INK, spacing=0.6)
-    svg.text(14, 25, f"SECTION A–A′ · RED RIVER BELOW ST. ANDREWS LOCK AND DAM · WINTER {y0w}–{str(y0w + 1)[2:]} · "
+    annot(14, 18, "THE RIVER IN WINTER", size=6.0, fill=INK, spacing=0.6)
+    annot(14, 25, f"SECTION A–A′ · RED RIVER BELOW ST. ANDREWS LOCK AND DAM · WINTER {y0w}–{str(y0w + 1)[2:]} · "
              f"H 1:{args.h_scale:,} V 1:{args.v_scale:,}", size=2.2, fill=INK, spacing=0.3, opacity=0.85)
     caption = [
         f"Looking north. Ice grown day by day from Winnipeg's cold (Stefan's law), {ice[last]:.2f} m by {last.strftime('%B %d')}; "
@@ -580,7 +581,7 @@ def build(args):
         "fish by winter habit (diagram, 1:{0}).".format(args.fish_scale),
     ]
     for j, c in enumerate(caption):
-        svg.text(14, 30 + 2.8 * j, c, size=1.7, fill=INK, opacity=0.7)
+        annot(14, 30 + 2.8 * j, c, size=1.7, fill=INK, opacity=0.7)
     svg.text(4, sec.Y(args.horizon) - 4, "A", size=5, fill=INK)
     svg.text(Wp - 4, sec.Y(args.horizon) - 4, "A′", size=5, fill=INK, anchor="end")
 
@@ -635,6 +636,8 @@ def main():
     ap.add_argument("--dam-row", type=int, default=2135)
     ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/04a_winter_scene.svg")
     # Palette (rgb 0-1): cold, near monochrome, ice the only accent.
     ap.set_defaults(sky_top=(0.03, 0.04, 0.055), sky_glow=(0.36, 0.41, 0.47), snow=(0.8, 0.84, 0.88),

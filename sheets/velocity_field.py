@@ -271,6 +271,7 @@ def build(args):
     x_plans = [x_left, x_left + pw + gap]
     y0 = m + 62
     svg = Svg(Wp, Hp)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     L = dict(frame="FRAME · 0.15 mm", frame_plans="PLAN FRAMES · 0.08 mm",
              contour="CONTOURS 1 M · 0.035 mm", contour5="CONTOURS 5 M · 0.05 mm",
              lines=f"STREAMLINES · {args.line:g} mm", heads=f"ARROWHEADS, EQUAL TRAVEL TIME · {args.line * 1.6:g} mm",
@@ -279,7 +280,8 @@ def build(args):
     for name in L.values():
         svg.layer(name)
     svg.layer(L["frame"])
-    svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
     north = true_north_angle(transform, crs, (r0 + r1) / 2, (c0 + c1) / 2)
     every_main = max(1, int(round(max(len(d["lines"]) for d in days) / args.head_lines)))
 
@@ -290,10 +292,10 @@ def build(args):
         svg.text(x0, y0 - 9, day["title"], size=2.6, fill=INK, spacing=0.25)
         q_txt = f"{day['q']:,.0f} m³/s at Lockport" + (f" ({day['q'] - day['q_fw']:,.0f} river, "
                                                       f"{day['q_fw']:,.0f} floodway)" if day["q_fw"] else "")
-        svg.text(x0, y0 - 5, q_txt + f" · {len(day['lines'])} streamlines", size=2.0, fill=INK)
-        svg.text(x0, y0 - 2, day["note"], size=1.6, fill=INK, opacity=0.75)
+        annot(x0, y0 - 5, q_txt + f" · {len(day['lines'])} streamlines", size=2.0, fill=INK)
+        annot(x0, y0 - 2, day["note"], size=1.6, fill=INK, opacity=0.75)
         sp = day["speed"][day["wet"]]
-        svg.text(x0 + pw, y0 + ph + 4, f"SPEED: MEDIAN {np.median(sp):.2f} M/S · FASTEST 1% {np.percentile(sp, 99):.2f} M/S",
+        annot(x0 + pw, y0 + ph + 4, f"SPEED: MEDIAN {np.median(sp):.2f} M/S · FASTEST 1% {np.percentile(sp, 99):.2f} M/S",
                  size=1.8, fill=INK, anchor="end")
 
     # Details: the dam and the floodway outlet, enlarged, each pair centred
@@ -301,7 +303,7 @@ def build(args):
     dy0 = y0 + ph + 30
     det_w = (args.detail_dam[3] - args.detail_dam[2]) * 1000.0 / args.detail_scale
     svg.layer(L["text"])
-    svg.text(x_plans[0], dy0 - 8, f"DETAILS · 1:{args.detail_scale:,} · ARROWHEADS EVERY {args.detail_chevron_s:g} S OF TRAVEL",
+    svg.text(x_plans[0], dy0 - 8, f"DETAILS · 1:{args.detail_scale:,}",
              size=2.2, fill=INK, spacing=0.25)
     for i, (xp, day) in enumerate(zip(x_plans, days)):
         dgap = pw - 2 * det_w
@@ -320,7 +322,7 @@ def build(args):
     # Legend, top right.
     lx, ly = Wp - m - 200, m + 12
     svg.layer(L["text"])
-    svg.text(lx, ly, "READING THE PLANS", size=2.2, fill=INK, spacing=0.25)
+    annot(lx, ly, "READING THE PLANS", size=2.2, fill=INK, spacing=0.25)
     legend = [
         f"Each line carries {args.per_line:g} m³/s: lines crowd where more water passes.",
         f"Arrowheads point downstream, placed every {args.chevron_s / 60:g} minutes of travel on every "
@@ -329,13 +331,13 @@ def build(args):
         "The river flows north, to Lake Winnipeg.",
     ]
     for j, t in enumerate(legend):
-        svg.text(lx, ly + 4 + 2.8 * j, t, size=1.75, fill=INK, opacity=0.85)
+        annot(lx, ly + 4 + 2.8 * j, t, size=1.75, fill=INK, opacity=0.85)
 
     # Title block.
     svg.layer(L["text"])
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT ST. ANDREWS LOCK AND DAM — WATER MOTION", size=5.2, fill=INK, spacing=0.4)
-    svg.text(tx, ty + 7, f"ESTIMATED DEPTH-AVERAGED FLOW ON TWO DAYS · 1:{args.scale:,}", size=2.4, fill=INK,
+    annot(tx, ty, "RED RIVER AT ST. ANDREWS LOCK AND DAM — WATER MOTION", size=5.2, fill=INK, spacing=0.4)
+    annot(tx, ty + 7, f"ESTIMATED DEPTH-AVERAGED FLOW ON TWO DAYS · 1:{args.scale:,}", size=2.4, fill=INK,
              spacing=0.3)
     notes = [
         "Streamlines of equal discharge, traced through the flow; no banks are drawn — they appear where the lines run. "
@@ -352,7 +354,7 @@ def build(args):
         "Manitoba / published accounts of the 1997 flood.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
+        annot(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     svg.save(args.out)
@@ -400,6 +402,8 @@ def main():
     ap.add_argument("--label", nargs=4, action="append", metavar=("TEXT", "ROW", "COL", "ANGLE"))
     ap.add_argument("--scale", type=int, default=5000)
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/01_velocity_field.svg")
     args = ap.parse_args()
     if args.label is None:

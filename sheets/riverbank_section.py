@@ -71,6 +71,7 @@ def build(args):
     m = 14.0
     sec = Section(m + 40, m + 70, args.scale, args.scale, args.z_top)
     svg = Svg(Wp, Hp)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.03–0.05 mm",
              geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.08 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.08 mm",
              geo_shale="GEOLOGY · SHALE, PARTINGS · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.08 mm",
@@ -84,7 +85,8 @@ def build(args):
     for name in L.values():
         svg.layer(name)
     svg.layer(L["frame"])
-    svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
     svg.layer(L["grid"])
     datum_grid(svg, sec, width, args.z_bottom, args.z_top, INK, chain=10.0)
 
@@ -243,8 +245,8 @@ def build(args):
     svg.layer(L["text"])
 
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT LOCKPORT — RIVERBANK SECTION B–B′", size=5.2, fill=INK, spacing=0.4)
-    svg.text(tx, ty + 7, f"EAST BANK, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · 1:{args.scale:,} (TRUE SCALE)",
+    annot(tx, ty, "RED RIVER AT LOCKPORT — RIVERBANK SECTION B–B′", size=5.2, fill=INK, spacing=0.4)
+    annot(tx, ty + 7, f"EAST BANK, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · 1:{args.scale:,} (TRUE SCALE)",
              size=2.4, fill=INK, spacing=0.3)
     notes = [
         (f"Sky: each hour's wind at {sky_station.title()} scatters points along its west–east travel ({wind_m:g} m per km/h), "
@@ -264,7 +266,7 @@ def build(args):
         "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information Network.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
+        annot(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
 
     svg.layer(L["scale"])
     scale_bar(svg, sec.x0, Hp - m - 9, 20 * sec.sh, 20, "m", color=INK)
@@ -323,6 +325,8 @@ def main():
     ap.add_argument("--dam-row", type=int, default=2135)
     ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD_P")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/04b_riverbank_section.svg")
     build(ap.parse_args())
 

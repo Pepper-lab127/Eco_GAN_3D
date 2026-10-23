@@ -84,6 +84,7 @@ def build(args):
     peaks = sorted(range(n), key=lambda i: -np.nanmax(rows[i]))[: args.flags]
 
     svg = Svg(W, H, background="#ffffff")
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     frame_y0, frame_y1 = m, H - m
 
     # Layers by line weight, declared bottom to top so they stack in this order.
@@ -174,15 +175,15 @@ def build(args):
         # Title block.
         lay("text")
         tx, ty = m + 10, frame_y0 + 14
-        svg.text(tx, ty, "RED RIVER AT LOCKPORT", size=5.2, fill=ink, spacing=0.4)
-        svg.text(tx, ty + 7, "HYDROGRAPH SURFACE — "
+        annot(tx, ty, "RED RIVER AT LOCKPORT", size=5.2, fill=ink, spacing=0.4)
+        annot(tx, ty + 7, "HYDROGRAPH SURFACE — "
                  + ("DAILY DISCHARGE" if args.param == "discharge" else "DAILY WATER LEVEL")
                  + f", WATER YEARS {years[0]}–{years[-1]}", size=2.4, fill=ink, spacing=0.3)
-        svg.text(tx, ty + 12, "Each line is one water year (Nov 1 – Oct 31), oldest at the back. "
+        annot(tx, ty + 12, "Each line is one water year (Nov 1 – Oct 31), oldest at the back. "
                  "Time is measured in river phases, not months: ice cover is compressed,", size=1.9, fill=ink)
-        svg.text(tx, ty + 15, "break-up and flood crest are stretched. The ground turns at break-up.",
+        annot(tx, ty + 15, "break-up and flood crest are stretched. The ground turns at break-up.",
                  size=1.9, fill=ink)
-        svg.text(tx, ty + 20, f"SOURCE: {source}", size=1.7, fill=ink,
+        annot(tx, ty + 20, f"SOURCE: {source}", size=1.7, fill=ink,
                  weight="bold" if placeholder else None, opacity=1 if placeholder else 0.7)
         notes = []
         if args.param == "level":
@@ -194,14 +195,15 @@ def build(args):
         if unrecorded.any() or np.isnan(rows).mean() > 0.05:
             notes.append("Dotted: no record (the gauge reports open-water season only, or data is missing).")
         for j, note in enumerate(notes):
-            svg.text(tx, ty + 23 + 3 * j, note, size=1.7, fill=ink, opacity=0.7)
+            annot(tx, ty + 23 + 3 * j, note, size=1.7, fill=ink, opacity=0.7)
 
         svg.close_group()
 
     draw(INK_LIGHT, INK_DARK, svg.clip_rect(0, 0, flip_x, H))
     draw(INK_DARK, "#ffffff", svg.clip_rect(flip_x, 0, W - flip_x, H))
     svg.layer(L["frame"])
-    svg.rect(m, frame_y0, W - 2 * m, frame_y1 - frame_y0, fill="none", stroke=INK_DARK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, frame_y0, W - 2 * m, frame_y1 - frame_y0, fill="none", stroke=INK_DARK, stroke_width=0.15)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     svg.save(args.out)
@@ -227,6 +229,8 @@ def main():
     ap.add_argument("--amplitude", type=float, default=95.0, help="mm height of the record maximum")
     ap.add_argument("--line", type=float, default=0.12, help="line weight in mm")
     ap.add_argument("--flags", type=int, default=5, help="number of largest crests to label")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/03_hydrograph_surface.svg")
     build(ap.parse_args())
 

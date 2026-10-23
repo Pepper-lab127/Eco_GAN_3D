@@ -399,6 +399,7 @@ def build(args):
 
     # ---------------------------------------------------------------- sheet
     svg = Svg(Wp, Hp, background=args.page)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     L = dict(render="RENDER (RASTER COMPOSITE)", ticks="DATA · DAY TICKS, FIRST OF EACH MONTH · 0.1 mm",
              scale="SCALE BAR", text="TEXT")
     for name in L.values():
@@ -423,8 +424,8 @@ def build(args):
                      (y_water, f"WATER · {water_d:.1f} M"), (y_bed, "LAKE CLAY")):
         svg.text(img_x - 3, img_y + y / R + 0.7, label, size=1.8, fill=INK, anchor="end", spacing=0.15)
 
-    svg.text(img_x, 30, "UNDER THE ICE", size=6, fill=INK, spacing=0.6)
-    svg.text(img_x, 37, f"RED RIVER BELOW ST. ANDREWS LOCK AND DAM · DEEPEST WATER ON SECTION A–A′ · WINTER {y0}–{str(y0 + 1)[2:]} · "
+    annot(img_x, 30, "UNDER THE ICE", size=6, fill=INK, spacing=0.6)
+    annot(img_x, 37, f"RED RIVER BELOW ST. ANDREWS LOCK AND DAM · DEEPEST WATER ON SECTION A–A′ · WINTER {y0}–{str(y0 + 1)[2:]} · "
              f"1:{args.scale} (TRUE SCALE)", size=2.2, fill=INK, spacing=0.3, opacity=0.85)
     cap = [
         f"Section through the river's winter cover at its deepest point, {last.strftime('%B %d, %Y')}. The ice grew "
@@ -439,7 +440,7 @@ def build(args):
         "Rendered composite; layer thicknesses, timing and current from data, textures interpretive.",
     ]
     for j, c in enumerate(cap):
-        svg.text(img_x, img_y + img_h + 12 + 3.2 * j, c, size=2.1, fill=INK, opacity=0.85 if j < 5 else 0.6)
+        annot(img_x, img_y + img_h + 12 + 3.2 * j, c, size=2.1, fill=INK, opacity=0.85 if j < 5 else 0.6)
     svg.layer(L["scale"])
     scale_bar(svg, img_x, Hp - 22, 0.5 * s, 0.5, "m", color=INK)
 
@@ -475,6 +476,8 @@ def main():
     ap.add_argument("--clasts", type=float, default=150)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD_P")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/04c_under_the_ice.svg")
     ap.set_defaults(page="#f4f3f0", paper_tone=(0.95, 0.955, 0.955), snow=(0.93, 0.945, 0.95),
                     ice_white=(0.86, 0.91, 0.93), ice_blue=(0.55, 0.72, 0.82), ice_deep=(0.3, 0.47, 0.6),

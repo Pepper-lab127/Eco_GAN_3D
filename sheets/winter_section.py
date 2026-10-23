@@ -71,6 +71,7 @@ def build(args):
     sec = Section(m + 34, m + 62, args.h_scale, args.v_scale, args.z_top)
     width = len(ch)
     svg = Svg(Wp, Hp, background=GROUND)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
 
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.03–0.05 mm",
              geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.06 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.06 mm",
@@ -86,7 +87,8 @@ def build(args):
         svg.layer(name)
 
     svg.layer(L["frame"])
-    svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
 
     svg.layer(L["grid"])
     datum_grid(svg, sec, width, args.z_bottom, args.z_top, INK)
@@ -268,7 +270,7 @@ def build(args):
     svg.text(det.X(0), det.Y(det.z_top) - 4, f"DETAIL · ICE OF {coldest['year']}–{str(coldest['year'] + 1)[2:]}, "
              f"THE COLDEST WINTER · H 1:{args.detail_h_scale:,} · V 1:{args.detail_v_scale:,}", size=2.0, fill=INK,
              spacing=0.2)
-    svg.text(det.X(0), det.Y(z_lo) + 4, "Faint: the water surface each day. Strong: the underside of the ice "
+    annot(det.X(0), det.Y(z_lo) + 4, "Faint: the water surface each day. Strong: the underside of the ice "
              "each day, estimated; heavier lines on the first of each month.", size=1.7, fill=INK, opacity=0.8)
 
     # Labels in the section.
@@ -295,8 +297,8 @@ def build(args):
 
     # Title block.
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT LOCKPORT — WINTER SECTION A–A′", size=5.2, fill=INK, spacing=0.4)
-    svg.text(tx, ty + 7, f"WEST TO EAST, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · H 1:{args.h_scale:,} · "
+    annot(tx, ty, "RED RIVER AT LOCKPORT — WINTER SECTION A–A′", size=5.2, fill=INK, spacing=0.4)
+    annot(tx, ty + 7, f"WEST TO EAST, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · H 1:{args.h_scale:,} · "
              f"V 1:{args.v_scale:,} (HEIGHTS ×{args.h_scale / args.v_scale:.3g})", size=2.4, fill=INK, spacing=0.3)
     yrs = f"{usable[0]['year']}–{usable[-1]['year'] + 1}"
     notes = [
@@ -315,7 +317,7 @@ def build(args):
         "Network; Manitoba Natural Resources (waterbody data); COSEWIC status.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
+        annot(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
 
     svg.layer(L["scale"])
     sb_y = Hp - m - 9
@@ -380,6 +382,8 @@ def main():
     ap.add_argument("--dam-row", type=int, default=2135)
     ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/04a_winter_section.svg")
     build(ap.parse_args())
 

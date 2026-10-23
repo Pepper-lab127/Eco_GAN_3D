@@ -107,6 +107,7 @@ def build(args):
         return x_left + ((st["median"] - lowest_median) * args.shift if st else 0.0)
 
     svg = Svg(Wp, Hp)
+    annot = svg.text if args.annotate else (lambda *a, **k: None)      # titles and notes: only with --annotate
     # Layers by line weight, declared bottom to top so they stack in this order.
     L = dict(frame="FRAME · 0.15 mm", terrain="BANDS · LIDAR TERRAIN (IMAGES)",
              outline="BANDS · NO-RECORD OUTLINE, DASHED · 0.1 mm",
@@ -116,7 +117,8 @@ def build(args):
     for name in L.values():
         svg.layer(name)
     svg.layer(L["frame"])
-    svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
+    if args.annotate:
+        svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
 
     for i, month in enumerate(order):
         rs, re, main, st = band(i)
@@ -210,8 +212,8 @@ def build(args):
     # Title block.
     svg.layer(L["text"])
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
-    svg.text(tx, ty + 7, f"CALENDAR CUT — MONTHLY WATER LEVELS ON 1 M LIDAR TERRAIN, 1:{args.scale:,}",
+    annot(tx, ty, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
+    annot(tx, ty + 7, f"CALENDAR CUT — MONTHLY WATER LEVELS ON 1 M LIDAR TERRAIN, 1:{args.scale:,}",
              size=2.4, fill=INK, spacing=0.3)
     up, dn = reaches["above"], reaches["below"]
 
@@ -232,7 +234,7 @@ def build(args):
         "The lidar cannot see under water: where it shows river, the bed and lower banks are unknown and are drawn as water in every month.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
+        annot(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
 
     # Scale bar and north arrow.
     svg.layer(L["scale"])
@@ -274,6 +276,8 @@ def main():
     ap.add_argument("--min-days", type=int, default=10, help="days a month needs to count for a year")
     ap.add_argument("--min-years", type=int, default=5, help="years a month needs to be drawn")
     ap.add_argument("--paper", choices=list(PAPER), default="A2")
+    ap.add_argument("--annotate", action="store_true",
+                    help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/02_calendar_cut.svg")
     args = ap.parse_args()
     if args.label is None:
