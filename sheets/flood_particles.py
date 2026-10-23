@@ -187,8 +187,8 @@ def build(args):
     L = dict(
         frame=f"FRAME · {mm(0.15)}",
         contour=f"PLAN · CONTOURS 1 M · {mm(args.contour)}",
-        contour5=f"PLAN · CONTOURS 5 M · {mm(args.contour * 1.6)}",
-        riverbed=f"PLAN · RIVERBED CONTOURS 1 M (CHART), DASHED · {mm(0.06)}",
+        contour5=f"PLAN · CONTOURS 5 M · {mm(args.contour * 1.4)}",
+        riverbed=f"PLAN · RIVERBED CONTOURS 1 M (CHART), DASHED · {mm(0.035)}",
         bed=f"PLAN · FLOODWAY BED, DOTTED · {mm(0.1)}",
         dots=f"PLAN · DOTS · {mm(args.dot)}",
         first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
@@ -219,8 +219,8 @@ def build(args):
                      for ln in lines if len(ln) > 8)
         index = lv % 5 == 0
         plan("contour5" if index else "contour")
-        svg.path(d, fill="none", stroke="#7a7a7a", stroke_width=args.contour * (1.6 if index else 1.0),
-                 opacity=0.9 if index else 0.65)
+        svg.path(d, fill="none", stroke="#a6a6a6", stroke_width=args.contour * (1.4 if index else 1.0),
+                 opacity=0.6 if index else 0.4)
         svg.close_group()
 
     # The riverbed from the chart, as dashed contours every metre.
@@ -233,7 +233,7 @@ def build(args):
                 lns = contourpy.contour_generator(z=z, name="serial").lines(lv)
                 svg.path(" ".join(points_to_path(x0 + (ln[::2, 0] + 0.5) * s, y0 + (ln[::2, 1] + 0.5) * s)
                                   for ln in lns if len(ln) > 8),
-                         fill="none", stroke=INK, stroke_width=0.06, stroke_dasharray="0.8 0.5", opacity=0.6)
+                         fill="none", stroke="#a6a6a6", stroke_width=0.035, stroke_dasharray="0.8 0.5", opacity=0.5)
         svg.close_group()
 
     # The floodway bed, dotted: where its dots go when its flow is known.
@@ -416,7 +416,7 @@ def main():
     ap.add_argument("--edge-share", type=float, default=0.6, help="share of each day's dots placed along the water's edges")
     ap.add_argument("--front", type=float, default=12.0, help="m over which each day's dots thin from the edge")
     ap.add_argument("--dot", type=float, default=0.18, help="dot diameter in mm")
-    ap.add_argument("--contour", type=float, default=0.075, help="contour line weight in mm (5 m contours 1.6x)")
+    ap.add_argument("--contour", type=float, default=0.035, help="contour line weight in mm (5 m contours 1.4x)")
     ap.add_argument("--graph", type=float, default=0.18, help="timeline tick weight in mm")
     ap.add_argument("--seed", type=int, default=1997)
     # Rows/cols of the DEM: from the floodway outlet north of the dam to

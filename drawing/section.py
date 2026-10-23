@@ -43,7 +43,7 @@ def water_edges(ground, level, near):
 
 
 def datum_grid(svg, sec, width_m, z_bottom, z_top, ink, minor=1.0, major=5.0, chain=50.0,
-               weight=0.06, label_size=1.9, side_labels=True):
+               weight=0.03, label_size=1.9, side_labels=True):
     """Dotted elevation lines every `minor` m (labelled every `major` m, as
     +230 etc.), and chainage lines every `chain` m."""
     x0, x1 = sec.X(0), sec.X(width_m)
@@ -51,13 +51,13 @@ def datum_grid(svg, sec, width_m, z_bottom, z_top, ink, minor=1.0, major=5.0, ch
         is_major = abs(z / major - round(z / major)) < 1e-6
         y = sec.Y(z)
         svg.line(x0, y, x1, y, stroke=ink, stroke_width=weight * (1.6 if is_major else 1.0),
-                 stroke_dasharray="0.15 0.85" if not is_major else "0.15 0.45", opacity=0.7 if is_major else 0.45)
+                 stroke_dasharray="0.15 0.85" if not is_major else "0.15 0.45", opacity=0.45 if is_major else 0.25)
         if is_major and side_labels:
             svg.text(x0 - 2, y + label_size * 0.35, f"+{z:.0f}", size=label_size, fill=ink, anchor="end")
             svg.text(x1 + 2, y + label_size * 0.35, f"+{z:.0f}", size=label_size, fill=ink)
     for ch in np.arange(0, width_m + 0.001, chain):
         x = sec.X(ch)
         svg.line(x, sec.Y(z_top), x, sec.Y(z_bottom), stroke=ink, stroke_width=weight,
-                 stroke_dasharray="0.15 0.85", opacity=0.35)
+                 stroke_dasharray="0.15 0.85", opacity=0.2)
         svg.text(x, sec.Y(z_bottom) + label_size + 1.5, f"{ch:.0f}", size=label_size * 0.85, fill=ink,
                  anchor="middle", opacity=0.7)

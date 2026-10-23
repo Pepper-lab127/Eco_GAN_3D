@@ -167,7 +167,7 @@ def build(args):
             svg.open_group(clip_path=clip)
             svg.path(" ".join(points_to_path(x0 + ln[::2, 0] * stp * s_, y0 + ln[::2, 1] * stp * s_)
                               for ln in lns if len(ln) > 8),
-                     fill="none", stroke="#8a8a8a", stroke_width=0.1 if index else 0.06, opacity=0.8 if index else 0.55)
+                     fill="none", stroke="#a6a6a6", stroke_width=0.05 if index else 0.035, opacity=0.6 if index else 0.4)
             svg.close_group()
 
         svg.layer(L["lines"])
@@ -257,7 +257,7 @@ def build(args):
     y0 = m + 62
     svg = Svg(Wp, Hp)
     L = dict(frame="FRAME · 0.15 mm", frame_plans="PLAN FRAMES · 0.08 mm",
-             contour="CONTOURS 1 M · 0.06 mm", contour5="CONTOURS 5 M · 0.1 mm",
+             contour="CONTOURS 1 M · 0.035 mm", contour5="CONTOURS 5 M · 0.05 mm",
              lines=f"STREAMLINES · {args.line:g} mm", heads=f"ARROWHEADS, EQUAL TRAVEL TIME · {args.line * 1.6:g} mm",
              dam="DAM AND LOCK · 0.35 mm", arrow="FLOW ARROWS · 0.35 mm",
              scale="SCALE BARS AND NORTH ARROWS", text="TEXT")

@@ -72,7 +72,7 @@ def build(args):
     width = len(ch)
     svg = Svg(Wp, Hp, background=GROUND)
 
-    L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
+    L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.03–0.05 mm",
              geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.06 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.06 mm",
              geo_shale="GEOLOGY · SHALE, PARTINGS · 0.06 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.06 mm",
              canopy="WINTER CANOPY (LIDAR) · 0.05 mm", water="WINTER WATER SURFACES · 0.05 mm",

@@ -71,7 +71,7 @@ def build(args):
     m = 14.0
     sec = Section(m + 40, m + 70, args.scale, args.scale, args.z_top)
     svg = Svg(Wp, Hp)
-    L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
+    L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.03–0.05 mm",
              geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.08 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.08 mm",
              geo_shale="GEOLOGY · SHALE, PARTINGS · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.08 mm",
              wind="SKY · CALMER HOURS, CRISP · 0.12 mm", wind_mid="SKY · WINDIER HOURS, SOFT BLUR",

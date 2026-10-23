@@ -41,7 +41,7 @@ def key_plan(svg, dem, x, y, window, cut_row, cut_cols, dam_row, dam_cols, ink, 
     for ln in terrain.smooth_contours(a[::step, ::step], [valley_z], sigma=1.5)[valley_z]:
         if len(ln) > 10:
             svg.path(points_to_path(x + ln[:, 0] * step * s, y + ln[:, 1] * step * s), fill="none",
-                     stroke=ink, stroke_width=0.06, opacity=0.6)
+                     stroke=ink, stroke_width=0.035, opacity=0.45)
     for ln in terrain.mask_lines(water):
         svg.path(points_to_path(x + ln[:, 0] * step * s, y + ln[:, 1] * step * s), fill="none",
                  stroke=ink, stroke_width=0.12)
