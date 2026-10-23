@@ -20,6 +20,16 @@ python -m sheets.hydrograph_surface --csv data/lockport/daily.csv --param level
 The `SYM` column's `B` flag (ice / backwater conditions) is used to place
 the start of the break-up phase on the time axis.
 
+### Gauges on file
+
+- `daily.csv`: station **05OJ021**, daily water level 1996-2025, open-water
+  season only. Matches Manitoba's "Red River Upstream of Dam at Lockport".
+- `daily_05OJ024.csv`: station **05OJ024**, daily water level Aug 2022 - Oct
+  2025. Also on the pool above the dam: on 669 shared days it reads within
+  about 1 cm of 05OJ021 (median -0.012 m). Useful as a cross-check or to
+  extend the record, not for the river below the dam (which the lidar shows
+  about 2 m lower, ~217.6 m).
+
 ## Elevation (sheets 01, 02, 04, 05)
 
 `dem/lockport_dtm_1m.tif` (bare ground) and `dem/lockport_dsm_1m.tif` (with

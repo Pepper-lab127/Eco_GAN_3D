@@ -157,13 +157,19 @@ def build(args):
         svg.line(bx, y, bx + W * s, y, stroke="#ffffff", stroke_width=0.15, stroke_dasharray="1.2 0.8")
         svg.line(bx, y, bx - 3, y, stroke=INK, stroke_width=0.1)
         svg.text(bx - 4, y + 0.6, "DAM", size=1.7, fill=INK, anchor="end", spacing=0.2)
-        if args.lock:
-            lr, lc = args.lock[0] - r0, args.lock[1] - c0
-            j = int(np.searchsorted(band_rows, lr, side="right") - 1)
-            stj = stats.get(order[j])
-            lx = x_left + ((stj["median"] - lowest_median) * args.shift if stj else 0.0) + lc * s
-            ly = y_top + j * (band_h + gap) + (lr - band_rows[j]) * s
-            svg.text(lx - 2.5, ly + 0.6, "LOCK", size=1.7, fill="#ffffff", anchor="end", spacing=0.2)
+
+    # Place names, centred on a DEM row/col, rotated by angle (degrees).
+    for text, row, col, angle in args.label or []:
+        lr, lc = float(row) - r0, float(col) - c0
+        if not (0 <= lr < H and 0 <= lc < W):
+            continue
+        j = int(np.searchsorted(band_rows, lr, side="right") - 1)
+        stj = stats.get(order[j])
+        lx = x_left + ((stj["median"] - lowest_median) * args.shift if stj else 0.0) + lc * s
+        ly = y_top + j * (band_h + gap) + (lr - band_rows[j]) * s
+        ink = "#ffffff" if stj else INK
+        svg.text(lx, ly + 0.6, text, size=1.7, fill=ink, anchor="middle", spacing=0.2,
+                 rotate=float(angle) or None)
 
     # Title block.
     tx, ty = m + 8, m + 12
@@ -207,8 +213,9 @@ def main():
     ap.add_argument("--window", type=int, nargs=4, default=[1682, 3496, 0, 2600],
                     metavar=("ROW0", "ROW1", "COL0", "COL1"))
     ap.add_argument("--dam-row", type=int, default=2135, help="DEM row of the dam crest")
-    ap.add_argument("--lock", type=int, nargs=2, default=[2200, 1300], metavar=("ROW", "COL"),
-                    help="DEM row/col to label as the lock")
+    ap.add_argument("--label", nargs=4, action="append", metavar=("TEXT", "ROW", "COL", "ANGLE"),
+                    help="place name centred on a DEM row/col; repeat for more "
+                         "(default: the lock and Henderson Highway)")
     ap.add_argument("--start-month", type=int, default=12, choices=range(1, 13),
                     help="month of the top band")
     # The 2020 survey flattened the river at ~219.75 m, the 2014 one at the
@@ -222,7 +229,13 @@ def main():
     ap.add_argument("--min-years", type=int, default=5, help="years a month needs to be drawn")
     ap.add_argument("--paper", choices=list(PAPER), default="A2")
     ap.add_argument("--out", default="outputs/sheets/02_calendar_cut.svg")
-    build(ap.parse_args())
+    args = ap.parse_args()
+    if args.label is None:
+        args.label = [
+            ("LOCK", 2200, 1272, 0),
+            ("HENDERSON HWY", 2362, 1952, -90),   # raised road ~300 m east of the river
+        ]
+    build(args)
 
 
 if __name__ == "__main__":
