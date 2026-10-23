@@ -17,8 +17,9 @@ from scipy.sparse.linalg import spsolve
 
 def solve(domain, depth, inflow, outflow, discharge, cell):
     """domain, inflow, outflow: boolean grids; depth in m; discharge m3/s;
-    cell: grid spacing in m. Returns (u, v) velocity in m/s along columns
-    (east) and rows (south), zero outside the domain."""
+    cell: grid spacing in m. Returns (u, v, fn): velocity in m/s along
+    columns (east) and rows (south), zero outside the domain, and fn, the
+    discharge (m3/s) crossing each north cell face, from (r, c) to (r-1, c)."""
     H, W = domain.shape
     T = np.where(domain, np.maximum(depth, 0.05) ** (5 / 3), 0.0)
     idx = -np.ones(domain.shape, int)
@@ -83,4 +84,98 @@ def solve(domain, depth, inflow, outflow, discharge, cell):
     # A face carries c T dphi; per metre of width that is q = -c T grad(phi).
     u = np.where(domain, -c * T * gx / d, 0.0)
     v = np.where(domain, -c * T * gy / d, 0.0)
-    return u, v
+    # Exact face discharges (conservative), for the stream function.
+    fn = np.zeros(domain.shape)
+    both = domain[1:] & domain[:-1]
+    t = np.where(both, 2 * T[1:] * T[:-1] / np.maximum(T[1:] + T[:-1], 1e-12), 0.0)
+    fn[1:] = np.where(both, c * t * (np.nan_to_num(phi[1:]) - np.nan_to_num(phi[:-1])), 0.0)
+    return u, v, fn
+
+
+def _sample(f, r, c):
+    """Bilinear sample of grid f at fractional (row, col)."""
+    H, W = f.shape
+    r0, c0 = int(np.floor(r)), int(np.floor(c))
+    if r0 < 0 or c0 < 0 or r0 >= H - 1 or c0 >= W - 1:
+        return np.nan
+    fr, fc = r - r0, c - c0
+    return ((1 - fr) * (1 - fc) * f[r0, c0] + (1 - fr) * fc * f[r0, c0 + 1]
+            + fr * (1 - fc) * f[r0 + 1, c0] + fr * fc * f[r0 + 1, c0 + 1])
+
+
+def seeds_equal_discharge(u, v, depth, domain, row, per_line, cell):
+    """Seed points along a row so each streamline carries `per_line` m3/s:
+    (row, col) positions where the cumulative discharge across the row
+    reaches each multiple of per_line (plus half, to centre them)."""
+    q = np.where(domain[row], np.abs(v[row]) * depth[row] * cell, 0.0)
+    cum = np.cumsum(q)
+    total = cum[-1]
+    targets = np.arange(per_line / 2, total, per_line)
+    cols = np.interp(targets, cum, np.arange(len(cum)))
+    return [(row - 0.5, c) for c in cols], total
+
+
+def trace(u, v, domain, seed, step=0.5, max_steps=20000, min_speed=0.003):
+    """Follow the flow from seed (row, col) by midpoint steps of `step`
+    cells. Returns arrays rows, cols and travel time (s per cell length)."""
+    inside = domain.astype(float)
+    r, c = seed
+    rows, cols, times = [r], [c], [0.0]
+    t = 0.0
+    for _ in range(max_steps):
+        uu, vv = _sample(u, r, c), _sample(v, r, c)
+        sp = np.hypot(uu, vv) if uu == uu else np.nan
+        if not sp > min_speed:
+            break
+        rm, cm = r + 0.5 * step * vv / sp, c + 0.5 * step * uu / sp
+        um, vm = _sample(u, rm, cm), _sample(v, rm, cm)
+        spm = np.hypot(um, vm) if um == um else np.nan
+        if not spm > min_speed or _sample(inside, rm, cm) < 0.5:
+            break
+        r, c = r + step * vm / spm, c + step * um / spm
+        t += step / spm
+        rows.append(r); cols.append(c); times.append(t)
+    return np.array(rows), np.array(cols), np.array(times)
+
+
+def stream_lines(u, v, fn, domain, per_line, cell, edge=2):
+    """Streamlines as contours of the stream function: psi is the discharge
+    (m3/s) crossing each row of north faces west of a point, summed from the
+    exact face discharges fn (see solve), so it is conserved from row to row;
+    lines at every per_line carry equal flow and cannot merge. `edge` rows at
+    the inflow and outflow edges, where the flow is held fixed, are left out.
+
+    Returns [(rows, cols, seconds)] in cell units along each line, oriented
+    downstream, with cumulative travel time from its upstream end.
+    """
+    import contourpy
+
+    psi = np.cumsum(fn, axis=1)                          # at the north face of each cell
+    face = domain.copy()
+    face[1:] &= domain[:-1]
+    face[0] = False
+    psi = np.where(face, psi, np.nan)
+    psi[:edge + 1] = np.nan
+    psi[-edge:] = np.nan
+    total = np.nanpercentile(psi[np.isfinite(psi)], 99.5)
+    levels = np.arange(per_line / 2, total, per_line)
+    gen = contourpy.contour_generator(z=psi, name="serial")
+    speed = np.hypot(u, v)
+    out = []
+    for lv in levels:
+        for ln in gen.lines(lv):
+            if len(ln) < 6:
+                continue
+            cols, rows = ln[:, 0], ln[:, 1] - 0.5             # faces lie half a cell north
+            # Orient downstream: compare the line's direction with the flow.
+            mid = len(ln) // 2
+            r_, c_ = int(round(rows[mid])), int(round(cols[mid]))
+            dr, dc = rows[mid + 1] - rows[mid - 1], cols[mid + 1] - cols[mid - 1]
+            if dr * v[r_, c_] + dc * u[r_, c_] < 0:
+                rows, cols = rows[::-1], cols[::-1]
+            seg = np.hypot(np.diff(rows), np.diff(cols))
+            sp = np.array([_sample(speed, r, c) for r, c in zip(rows[1:], cols[1:])])
+            sp = np.where(sp > 0.003, sp, np.nan)
+            dt = np.nan_to_num(seg / sp, nan=0.0)
+            out.append((rows, cols, np.concatenate([[0.0], np.cumsum(dt)])))
+    return out
