@@ -41,6 +41,23 @@ the start of the break-up phase on the time axis.
 - `daily_05OJ014.csv`: station **05OJ014**, Red River Floodway near Lockport.
   Daily flow only, 1969-1976 (peak 1,130 m³/s), so it cannot place the
   floodway's water in 1997. Kept for a possible 1970s flood sheet.
+- `daily_05OJ015.csv`: station **05OJ015**, Red River at James Avenue,
+  Winnipeg. Daily water level 1971-2025 (1997 crest 229.24 m on May 3);
+  daily flow only for 121 days in 2020.
+- `daily_05OC029.csv`: station **05OC029**, daily flow (0-1,270 m³/s) and
+  level 2009-2023. Probably a newer floodway gauge (not yet confirmed).
+
+#### Floodway water balance (tested, not used for 1997)
+
+Floodway flow ≈ Lockport flow (05OJ010, one day later) minus the city's flow,
+with the city's flow read from James Avenue's level through a relation fitted
+on summer/fall days with the floodway closed (Lockport flow > 600 m³/s;
+±10%). Checked against the floodway's measured flow (05OJ014) in 1971-1976:
+1974 peak 1,130 m³/s measured vs 1,168 estimated; ±126 m³/s over 85 days;
+small floods fail. For 1997 it breaks down: ice raises James Avenue in early
+April, and at the crest James Avenue stood 1.35 m above the fitted range, so
+the estimate turns negative when the floodway carried its peak (~1,800 m³/s
+published).
 
 ## Elevation (sheets 01, 02, 04, 05)
 
