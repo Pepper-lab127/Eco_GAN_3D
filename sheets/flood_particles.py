@@ -298,7 +298,6 @@ def build(args):
         dots=f"PLAN · DOTS · {mm(args.dot)}",
         fwdots=f"PLAN · FLOODWAY WATER DOTS, GREY · {mm(args.dot)}",
         fwlines=f"PLAN · FLOODWAY FLOW PATHS · {mm(0.05)}",
-        fwheads=f"PLAN · FLOODWAY ARROWHEADS, EQUAL TRAVEL TIME · {mm(0.08)}",
         first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
         crest=f"PLAN · CREST EDGES · {mm(0.12)}",
         dam=f"PLAN · DAM AND LOCK · {mm(0.35)}",
@@ -357,8 +356,7 @@ def build(args):
     svg.path(d, fill="none", stroke=INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.85)
     svg.close_group()
 
-    # The floodway's water: grey dots along its flow paths, the paths faint,
-    # with arrowheads every few minutes of travel into and down the Red.
+    # The floodway's water: grey dots along its flow paths, the paths faint.
     if len(fx_all):
         plan("fwdots")
         d = "".join(f"M{x0 + x * s:.2f},{y0 + y * s:.2f}h0" for x, y in zip(fx_all, fy_all))
@@ -367,27 +365,6 @@ def build(args):
         plan("fwlines")
         svg.path(" ".join(points_to_path(x0 + (cc + 0.5) * s, y0 + (rr + 0.5) * s) for rr, cc, _ in fw_lines),
                  fill="none", stroke=INK, stroke_width=0.05, opacity=0.6)
-        svg.close_group()
-        heads = []
-        sz = 0.9
-        for j, (rr, cc, tt) in enumerate(fw_lines):
-            if j % 3:
-                continue
-            for t_mark in np.arange(args.fw_chevron_s * (0.5 + (j * 0.37) % 1), tt[-1], args.fw_chevron_s):
-                i = int(np.searchsorted(tt, t_mark))
-                if i < 1 or i >= len(tt):
-                    continue
-                px, py = x0 + (cc[i] + 0.5) * s, y0 + (rr[i] + 0.5) * s
-                ddx, ddy = cc[i] - cc[i - 1], rr[i] - rr[i - 1]
-                n_ = math.hypot(ddx, ddy)
-                if n_ == 0:
-                    continue
-                ddx, ddy = ddx / n_, ddy / n_
-                heads.append(f"M{px - sz * (ddx - 0.55 * ddy):.2f},{py - sz * (ddy + 0.55 * ddx):.2f}L{px:.2f},{py:.2f}"
-                             f"L{px - sz * (ddx + 0.55 * ddy):.2f},{py - sz * (ddy - 0.55 * ddx):.2f}")
-        plan("fwheads")
-        svg.path(" ".join(heads), fill="none", stroke=INK, stroke_width=0.08, stroke_linejoin="round",
-                 stroke_linecap="round", opacity=0.8)
         svg.close_group()
 
     # Hairlines: each reach's first and highest edges.
@@ -497,8 +474,8 @@ def build(args):
                        f"the floodway took {fw_est['k']:.2f} of Lockport's flow above {fw_est['q0']:,.0f} m³/s "
                        f"(±{fw_est['rmse']:.0f} m³/s); that gives a {fw_est['fit_peak']:,.0f} m³/s peak, scaled "
                        f"×{fw_est['scale']:.2f} to the published {args.floodway_peak:,.0f} m³/s, on {fw_peak.strftime('%b %d')}.")
-        fw_note = [fw_note, ("Grey dots: each day's floodway share, laid along its flow paths (fine lines, arrowheads every "
-                    f"{args.fw_chevron_s / 60:g} min of travel) from the channel through the outlet into the Red, solved by "
+        fw_note = [fw_note, ("Grey dots: each day's floodway share, laid along its flow paths (fine lines) "
+                    "from the channel through the outlet into the Red, solved by "
                     f"conveyance on its peak day with the channel {args.floodway_depth:g} m deep over its bed (assumed); "
                     "the river gets the rest." if fw_lines else
                     "Its share is spread along its bed (dotted outline), since its water's edge was not recorded.")]
@@ -573,7 +550,6 @@ def main():
                     help="m across the outlet structure joined to let the floodway's water reach the river")
     ap.add_argument("--fw-lines", type=int, default=40, help="floodway flow paths drawn")
     ap.add_argument("--fw-spread", type=float, default=6.0, help="m the floodway dots scatter about their paths")
-    ap.add_argument("--fw-chevron-s", type=float, default=240.0, help="seconds of travel between floodway arrowheads")
     ap.add_argument("--start", default="1997-04-01")
     ap.add_argument("--end", default="1997-06-30")
     ap.add_argument("--volume", type=float, default=100_000, help="m³ of water per dot")

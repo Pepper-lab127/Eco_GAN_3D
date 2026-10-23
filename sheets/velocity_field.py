@@ -107,6 +107,7 @@ def build(args):
         # lidar shows the structure, not the gate openings).
         return np.where(bar, ndimage.maximum_filter(np.where(bar, 0, d), size=7), d)
 
+    outlet_rc = None
     for day in days:
         up, dn, cross = wetted(day)
         dom = largest(up | dn | cross)
@@ -136,7 +137,20 @@ def build(args):
             depth = np.where(dom, depth, depth_f)
             wet = wet | dom_f
             day["fw_cells"] = int(in_f.sum())
+            # The outlet structure: where the floodway's water runs fastest
+            # through its narrowest section, near where it meets the river.
+            sp_f = np.where(fw_wet | ch_bridge, np.hypot(uf, vf), 0.0)
+            sp_f[(args.outlet_search_row - r0) // st:] = 0
+            i, j = np.unravel_index(np.argmax(ndimage.uniform_filter(sp_f, 5)), sp_f.shape)
+            outlet_rc = (r0 + i * st, c0 + j * st)
         day.update(u=u, v=v, wet=wet, speed=np.hypot(u, v), depth=depth, fn=fn)
+
+    if args.detail_outlet is None:
+        hr = (args.detail_dam[1] - args.detail_dam[0]) // 2
+        hc = (args.detail_dam[3] - args.detail_dam[2]) // 2
+        orow, ocol = outlet_rc if outlet_rc else (1470, 1850)
+        args.detail_outlet = [orow - hr, orow + hr, ocol - hc, ocol + hc]
+        print(f"floodway outlet detail centred on row {orow}, col {ocol}")
 
     # Streamlines: contours of the stream function, each carrying an equal share
     # of the flow, so they crowd where more water passes and never merge.
@@ -380,7 +394,9 @@ def main():
     ap.add_argument("--detail-scale", type=int, default=2500)
     ap.add_argument("--detail-chevron-s", type=float, default=60.0)
     ap.add_argument("--detail-dam", type=int, nargs=4, default=[2020, 2250, 1180, 1640], metavar=("R0", "R1", "C0", "C1"))
-    ap.add_argument("--detail-outlet", type=int, nargs=4, default=[1300, 1530, 1760, 2220], metavar=("R0", "R1", "C0", "C1"))
+    ap.add_argument("--detail-outlet", type=int, nargs=4, metavar=("R0", "R1", "C0", "C1"),
+                    help="default: centred on the outlet structure (fastest floodway flow north of --outlet-search-row)")
+    ap.add_argument("--outlet-search-row", type=int, default=1700)
     ap.add_argument("--label", nargs=4, action="append", metavar=("TEXT", "ROW", "COL", "ANGLE"))
     ap.add_argument("--scale", type=int, default=5000)
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
