@@ -22,6 +22,20 @@ the start of the break-up phase on the time axis.
 
 ## Elevation (sheets 01, 02, 04, 05)
 
-High Resolution DEM (HRDEM, 1-2 m lidar) from NRCan, via open.canada.ca or
-the Geo.ca viewer. Area: roughly 50.06-50.11 N, 96.98-96.90 W. Download the
-**DTM** GeoTIFF tile(s) and save them as `data/lockport/dem/*.tif`.
+`dem/lockport_dtm_1m.tif` (bare ground) and `dem/lockport_dsm_1m.tif` (with
+trees and buildings) are 1 m lidar from NRCan's HRDEM, cut to a 3.5 x 4 km
+window around the lock and floodway outlet (EPSG:3979, heights in metres,
+CGVD2013, rounded to the centimetre).
+
+They merge two surveys: **MB-Red_River_2020** (river corridor) with gaps filled
+from **MB-Cooks_Creek** (2014). Water surfaces are flat at the level on the day
+of each flight, so the riverbed is not captured, and there is a visible step
+in the river where the two surveys meet.
+
+To rebuild them, or cut a different window, without downloading whole tiles:
+
+```
+pip install rasterio
+python tools/fetch_hrdem.py                  # Lockport defaults
+python tools/fetch_hrdem.py --keep-projects  # also each survey on its own
+```
