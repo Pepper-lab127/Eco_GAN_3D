@@ -67,7 +67,7 @@ def build(args):
 
     # A barrier across the dam and lock keeps the reaches' floods apart.
     barrier = np.zeros(a.shape, bool)
-    barrier[max(dam - 8, 0):dam + 9, args.dam_cols[0] - c0:args.dam_cols[1] - c0] = True
+    barrier[max(dam - 2, 0):dam + 3, args.dam_cols[0] - c0:args.dam_cols[1] - c0] = True
     floodable = np.where(barrier, np.inf, a)
 
     flow, flow_filled = daily(args.flow_csv, "discharge", start, end)
@@ -129,8 +129,9 @@ def build(args):
     for lv, lines in terrain.smooth_contours(a, np.arange(216, 232, 1.0)).items():
         d = " ".join(points_to_path(x0 + (ln[::2, 0] + 0.5) * s, y0 + (ln[::2, 1] + 0.5) * s)
                      for ln in lines if len(ln) > 8)
-        svg.path(d, fill="none", stroke="#8a8a8a", stroke_width=0.05,
-                 opacity=0.9 if lv % 5 == 0 else 0.5)
+        index = lv % 5 == 0
+        svg.path(d, fill="none", stroke="#6e6e6e", stroke_width=args.contour * (1.8 if index else 1.0),
+                 opacity=0.95 if index else 0.75)
 
     # A reach with no record: its lidar water outlined, dotted.
     if not args.floodway_csv and water_fw.any():
@@ -143,10 +144,17 @@ def build(args):
     svg.path(d, fill="none", stroke=INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.85)
 
     # Hairlines: each reach's first and highest edges.
+    near_dam = ndimage.binary_dilation(barrier, iterations=2)
     for (name, d), wet in edges.items():
         style = dict(stroke_width=0.12) if d != start else dict(stroke_width=0.08, stroke_dasharray="0.6 0.6")
-        path = " ".join(points_to_path(x0 + (ln[:, 0] + 0.5) * s, y0 + (ln[:, 1] + 0.5) * s)
-                        for ln in terrain.mask_lines(wet & ~barrier))
+        lines = terrain.mask_lines(wet & ~barrier)
+        # Leave the cut along the dam undrawn; it is not a water's edge.
+        path = " ".join(points_to_path(
+            x0 + (ln[:, 0] + 0.5) * s,
+            np.where(near_dam[np.clip(ln[:, 1].round().astype(int), 0, H - 1),
+                              np.clip(ln[:, 0].round().astype(int), 0, W - 1)],
+                     np.nan, y0 + (ln[:, 1] + 0.5) * s))
+            for ln in lines)
         svg.path(path, fill="none", stroke=INK, **style)
 
     # The dam.
@@ -162,35 +170,38 @@ def build(args):
                      spacing=0.2, rotate=float(angle) or None, opacity=0.8)
 
     # Timeline: a tick per day down the margin, its length the day's flow.
-    tx = x0 + pw + 26
-    tick_max = min(Wp - m - tx - 30, 90.0)
+    tx = x0 + pw + 30
+    tick_max = min(Wp - m - tx - 40, 120.0)
     qmax = max(flow.values())
-    svg.text(tx, y0 - 6, "DAILY FLOW PASSING LOCKPORT", size=1.9, fill=INK, spacing=0.2)
+    tw = args.graph                             # tick line weight, mm
+    svg.text(tx, y0 - 7, "DAILY FLOW PASSING LOCKPORT", size=2.6, fill=INK, spacing=0.25)
     svg.text(tx, y0 - 3, f"STATION {hydrometric.station_id(args.flow_csv)} · ONE TICK PER DAY",
-             size=1.6, fill=INK, opacity=0.7)
-    svg.line(tx, y0, tx, y0 + ph, stroke=INK, stroke_width=0.12)
+             size=2.0, fill=INK, opacity=0.75)
+    svg.line(tx, y0, tx, y0 + ph, stroke=INK, stroke_width=tw * 1.6)
     crest_up = reaches[0]["crest"]
     for k, d in enumerate(days):
         y = y0 + k / (len(days) - 1) * ph
         svg.line(tx, y, tx + flow[d] / qmax * tick_max, y, stroke=INK,
-                 stroke_width=0.25 if d == peak_day else 0.08,
-                 stroke_dasharray="0.4 0.4" if d in flow_filled else None)
+                 stroke_width=tw * 2.5 if d == peak_day else tw,
+                 stroke_dasharray="0.6 0.6" if d in flow_filled else None)
         if d.weekday() == 0 or d in (start, end):
-            svg.text(tx - 2, y + 0.6, d.strftime("%b %d").upper(), size=1.6, fill=INK, anchor="end")
+            svg.line(tx - 1.5, y, tx, y, stroke=INK, stroke_width=tw)
+            svg.text(tx - 2.5, y + 0.8, d.strftime("%b %d").upper(), size=2.0, fill=INK, anchor="end")
         if d == peak_day:
-            svg.text(tx + tick_max + 2, y + 0.6, f"{flow[d]:,.0f} m³/s", size=1.7, fill=INK)
+            svg.text(tx + tick_max + 2.5, y + 0.8, f"{flow[d]:,.0f} m³/s · {d.strftime('%b %d').upper()}",
+                     size=2.2, fill=INK)
         if d == crest_up and d != peak_day:
-            svg.text(tx + flow[d] / qmax * tick_max + 2, y - 1.2,
-                     f"CREST ABOVE DAM {level_up[d]:.2f} m", size=1.6, fill=INK, opacity=0.8)
+            svg.text(tx + flow[d] / qmax * tick_max + 2.5, y - 1.4,
+                     f"CREST ABOVE DAM {level_up[d]:.2f} m", size=2.0, fill=INK, opacity=0.85)
         if d == beyond[0] if beyond else False:
             svg.line(tx + q_hi / qmax * tick_max, y0, tx + q_hi / qmax * tick_max, y0 + ph,
-                     stroke=INK, stroke_width=0.06, stroke_dasharray="0.5 0.8")
+                     stroke=INK, stroke_width=tw * 0.8, stroke_dasharray="0.8 1.0")
     if beyond:
         bx = tx + q_hi / qmax * tick_max
-        svg.text(bx + 1, y0 + ph + 2.6, f"{q_hi:,.0f} m³/s: HIGHEST FLOW IN THE STAGE-FLOW FIT",
-                 size=1.5, fill=INK, opacity=0.7)
-    svg.line(tx, y0 + ph + 6, tx + 1000 / qmax * tick_max, y0 + ph + 6, stroke=INK, stroke_width=0.15)
-    svg.text(tx, y0 + ph + 9, "1,000 m³/s", size=1.6, fill=INK)
+        svg.text(bx + 1, y0 + ph + 3.2, f"{q_hi:,.0f} m³/s: HIGHEST FLOW IN THE STAGE-FLOW FIT",
+                 size=1.9, fill=INK, opacity=0.75)
+    svg.line(tx, y0 + ph + 8, tx + 1000 / qmax * tick_max, y0 + ph + 8, stroke=INK, stroke_width=tw * 1.6)
+    svg.text(tx, y0 + ph + 11.5, "1,000 m³/s", size=2.0, fill=INK)
 
     # Title block.
     n = len(xs_all)
@@ -215,8 +226,8 @@ def build(args):
          if beyond else "All days lie within the fitted range."),
         (f"Floodway: daily water level from {hydrometric.station_id(args.floodway_csv)}."
          if args.floodway_csv else
-         "Floodway (dotted outline): no 1997 record on file, so only its lidar water surface is shown; "
-         "it carried water in 1997 that this sheet cannot place."),
+         "Floodway (dotted outline: its lidar water surface): it carried water in 1997, but no 1997 floodway record is on file "
+         "(station 05OJ014 reported flow only, 1969–1976), so this sheet cannot place it."),
         "Faint lines: ground contours every metre. Heavy bar: the dam and lock, which no flood crosses here.",
         f"SOURCES: Water Survey of Canada stations {hydrometric.station_id(args.level_csv)}, "
         f"{hydrometric.station_id(args.flow_csv)}" + (f", {hydrometric.station_id(args.floodway_csv)}" if args.floodway_csv else "")
@@ -248,24 +259,26 @@ def main():
     ap.add_argument("--end", default="1997-06-30")
     ap.add_argument("--volume", type=float, default=100_000, help="m³ of water per dot")
     ap.add_argument("--front", type=float, default=12.0, help="m over which each day's dots thin from the edge")
-    ap.add_argument("--dot", type=float, default=0.16, help="dot diameter in mm")
+    ap.add_argument("--dot", type=float, default=0.18, help="dot diameter in mm")
+    ap.add_argument("--contour", type=float, default=0.1, help="contour line weight in mm (5 m contours 1.8x)")
+    ap.add_argument("--graph", type=float, default=0.18, help="timeline tick weight in mm")
     ap.add_argument("--seed", type=int, default=1997)
-    # Rows/cols of the DEM: the river from the floodway outlet north of the
-    # dam to ~1.6 km above it, and the floodway channel to the east.
-    ap.add_argument("--window", type=int, nargs=4, default=[1150, 3700, 0, 2900],
+    # Rows/cols of the DEM: from the floodway outlet north of the dam to
+    # ~800 m above it, and east across the floodway channel.
+    ap.add_argument("--window", type=int, nargs=4, default=[1150, 2950, 700, 2900],
                     metavar=("ROW0", "ROW1", "COL0", "COL1"))
     ap.add_argument("--dam-row", type=int, default=2135)
-    ap.add_argument("--dam-cols", type=int, nargs=2, default=[1240, 1700],
+    ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595],
                     help="DEM columns the dam and lock span (the flood barrier)")
     ap.add_argument("--water-below", type=float, default=223.2)
     ap.add_argument("--label", nargs=4, action="append", metavar=("TEXT", "ROW", "COL", "ANGLE"))
-    ap.add_argument("--scale", type=int, default=6000)
-    ap.add_argument("--paper", choices=list(PAPER), default="A1")
+    ap.add_argument("--scale", type=int, default=4000)
+    ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
     ap.add_argument("--out", default="outputs/sheets/05_flood_particles_1997.svg")
     args = ap.parse_args()
     if args.label is None:
         args.label = [("LOCK", 2200, 1272, 0), ("HENDERSON HWY", 2362, 1952, -90),
-                      ("FLOODWAY", 3150, 2375, -90)]
+                      ("FLOODWAY", 2750, 2470, -90), ("FLOODWAY OUTLET", 1395, 2010, 0)]
     build(args)
 
 

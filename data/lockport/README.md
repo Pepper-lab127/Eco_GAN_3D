@@ -38,6 +38,9 @@ the start of the break-up phase on the time axis.
   ```
   python -m sheets.hydrograph_surface --csv data/lockport/daily_05OJ010.csv
   ```
+- `daily_05OJ014.csv`: station **05OJ014**, Red River Floodway near Lockport.
+  Daily flow only, 1969-1976 (peak 1,130 m³/s), so it cannot place the
+  floodway's water in 1997. Kept for a possible 1970s flood sheet.
 
 ## Elevation (sheets 01, 02, 04, 05)
 

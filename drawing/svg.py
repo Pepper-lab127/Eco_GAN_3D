@@ -7,6 +7,8 @@ PAPER = {
     "A1": (841.0, 594.0),
     "A2": (594.0, 420.0),
     "A3": (420.0, 297.0),
+    "ARCHD": (914.4, 609.6),    # 36 x 24 in
+    "ARCHE": (1219.2, 914.4),   # 48 x 36 in
 }
 
 FONT = "Helvetica Neue, Helvetica, Arial, sans-serif"
