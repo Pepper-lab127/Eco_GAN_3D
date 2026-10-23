@@ -1,6 +1,6 @@
 """Subsurface layers from well logs, interpolated along a section and drawn
-with conventional patterns (clay dashes, till pebbles, shale lines,
-carbonate brickwork)."""
+with organic textures (varved clay, clast-filled till, fissile shale,
+bedded and jointed carbonate with vugs)."""
 
 import numpy as np
 
@@ -39,33 +39,110 @@ def interfaces(cols, ground_at, wells=LOCKPORT_WELLS):
     return out
 
 
-def _hatch(svg, kind, x0, x1, y0, y1, ink, rng, w):
-    """Pattern linework over a box; the caller clips it to the layer."""
+def _wave(rng, n_terms=4, amp=0.35, wl=(6, 40)):
+    """A smooth random 1-D wave y(x) in mm (a sum of sines)."""
+    ks = 2 * np.pi / rng.uniform(*wl, n_terms)
+    ph = rng.uniform(0, 2 * np.pi, n_terms)
+    am = amp * rng.uniform(0.3, 1.0, n_terms) / np.sqrt(n_terms)
+    return lambda x: sum(a * np.sin(k * x + p) for a, k, p in zip(am, ks, ph))
+
+
+def _blob(rng, cx, cy, r, n=9, rough=0.35):
+    """An irregular rounded clast outline."""
+    t = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    rr = r * (1 + rough * rng.uniform(-1, 1, n))
+    xs, ys = cx + rr * np.cos(t), cy + rr * np.sin(t) * rng.uniform(0.55, 0.9)
+    return "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in zip(xs, ys)) + " Z"
+
+
+def _texture(svg, kind, x0, x1, y0, y1, ink, rng, w):
+    """Organic pattern over a box; the caller clips it to the layer.
+
+    clay: varves, fine wavering laminae that pinch and part;
+    till: unsorted clasts of every size in a dusted matrix;
+    shale: fissile lenses, short overlapping wavy partings;
+    carbonate: wavy bedding planes, irregular joints and small vugs.
+    """
+    xs = np.arange(x0 - 2, x1 + 2, 0.6)
     if kind == "clay":
-        step, dash, gap = 1.1, 1.4, 1.0
-        for k, y in enumerate(np.arange(y0, y1, step)):
-            off = (k % 2) * (dash + gap) / 2
-            d = " ".join(f"M{x:.2f},{y:.2f}h{dash}" for x in np.arange(x0 - off, x1, dash + gap))
-            svg.path(d, fill="none", stroke=ink, stroke_width=w, opacity=0.8)
+        y = y0
+        while y < y1:
+            y += rng.uniform(0.35, 0.9)
+            f = _wave(rng, amp=0.25)
+            yy = y + f(xs)
+            # Break each lamina into runs so the varves pinch and part.
+            keep = _wave(rng, amp=1.0, wl=(8, 30))(xs) > rng.uniform(-0.6, 0.2)
+            run, parts = [], []
+            for x, v, k in zip(xs, yy, keep):
+                if k:
+                    run.append(f"{x:.2f},{v:.2f}")
+                elif len(run) > 1:
+                    parts.append("M" + " L".join(run))
+                    run = []
+                else:
+                    run = []
+            if len(run) > 1:
+                parts.append("M" + " L".join(run))
+            svg.path(" ".join(parts), fill="none", stroke=ink, stroke_width=w * rng.uniform(0.6, 1.2),
+                     opacity=float(rng.uniform(0.45, 0.85)))
     elif kind == "till":
-        n = int((x1 - x0) * (y1 - y0) / 2.2)
-        xs, ys = rng.uniform(x0, x1, n), rng.uniform(y0, y1, n)
-        rs = rng.uniform(0.15, 0.55, n)
-        d = " ".join(f"M{x + r:.2f},{y:.2f}a{r:.2f},{r * 0.7:.2f} 0 1 0 {-2 * r:.2f},0a{r:.2f},{r * 0.7:.2f} 0 1 0 {2 * r:.2f},0"
-                     for x, y, r in zip(xs[: n // 3], ys[: n // 3], rs[: n // 3]))
-        svg.path(d, fill="none", stroke=ink, stroke_width=w, opacity=0.8)
-        d = "".join(f"M{x:.2f},{y:.2f}h0" for x, y in zip(xs[n // 3:], ys[n // 3:]))
-        svg.path(d, fill="none", stroke=ink, stroke_width=w * 2.5, stroke_linecap="round", opacity=0.7)
-    elif kind == "shale":
-        d = " ".join(f"M{x0:.2f},{y:.2f}H{x1:.2f}" for y in np.arange(y0, y1, 0.45))
+        area = (x1 - x0) * (y1 - y0)
+        n = int(area / 9)
+        sizes = np.clip(rng.lognormal(-1.0, 0.7, n), 0.12, 2.6)
+        d = " ".join(_blob(rng, rng.uniform(x0, x1), rng.uniform(y0, y1), r) for r in sizes)
         svg.path(d, fill="none", stroke=ink, stroke_width=w, opacity=0.75)
+        m = int(area * 1.2)
+        d = "".join(f"M{x:.2f},{y:.2f}h0" for x, y in zip(rng.uniform(x0, x1, m), rng.uniform(y0, y1, m)))
+        svg.path(d, fill="none", stroke=ink, stroke_width=w * 1.6, stroke_linecap="round", opacity=0.45)
+    elif kind == "shale":
+        n = int((x1 - x0) * (y1 - y0) / 1.6)
+        parts = []
+        for _ in range(n):
+            cx, cy = rng.uniform(x0, x1), rng.uniform(y0, y1)
+            half = rng.uniform(1.0, 4.5)
+            sag = rng.uniform(-0.12, 0.12)
+            parts.append(f"M{cx - half:.2f},{cy:.2f} Q{cx:.2f},{cy + sag:.2f} {cx + half:.2f},{cy:.2f}")
+        svg.path(" ".join(parts), fill="none", stroke=ink, stroke_width=w, opacity=0.7)
     elif kind == "carbonate":
-        course, brick = 1.6, 3.4
-        parts = [f"M{x0:.2f},{y:.2f}H{x1:.2f}" for y in np.arange(y0, y1, course)]
-        for k, y in enumerate(np.arange(y0, y1, course)):
-            off = (k % 2) * brick / 2
-            parts += [f"M{x:.2f},{y:.2f}v{course:.2f}" for x in np.arange(x0 - off, x1, brick)]
-        svg.path(" ".join(parts), fill="none", stroke=ink, stroke_width=w, opacity=0.8)
+        # Bedding planes that wander, thin out and break off.
+        beds, y, parts = [], y0, []
+        while y < y1:
+            y += rng.uniform(0.8, 3.2)
+            b = y + _wave(rng, amp=0.45, wl=(12, 70))(xs)
+            beds.append(b)
+            keep = _wave(rng, amp=1.0, wl=(10, 45))(xs) > rng.uniform(-0.7, 0.3)
+            run = []
+            for x, v, k in zip(xs, b, keep):
+                if k:
+                    run.append(f"{x:.2f},{v:.2f}")
+                else:
+                    if len(run) > 1:
+                        parts.append("M" + " L".join(run))
+                    run = []
+            if len(run) > 1:
+                parts.append("M" + " L".join(run))
+        svg.path(" ".join(parts), fill="none", stroke=ink, stroke_width=w, opacity=0.7)
+        # Joints: sparse, leaning, ragged, only in some beds.
+        parts = []
+        for top, bot in zip(beds[:-1], beds[1:]):
+            if rng.random() < 0.45:
+                continue
+            x = x0 + rng.uniform(0, 10)
+            while x < x1:
+                i = min(max(int((x - xs[0]) / 0.6), 0), len(xs) - 1)
+                mid = (top[i] + bot[i]) / 2 + rng.uniform(-0.2, 0.2)
+                parts.append(f"M{x:.2f},{top[i]:.2f}L{x + rng.uniform(-0.3, 0.3):.2f},{mid:.2f}"
+                             f"L{x + rng.uniform(-0.5, 0.5):.2f},{bot[i]:.2f}")
+                x += rng.uniform(3.0, 16.0)
+        svg.path(" ".join(parts), fill="none", stroke=ink, stroke_width=w * 0.8, opacity=0.55)
+        # Vugs and fossil fragments: the porous, dissolved rock of the aquifer.
+        n = int((x1 - x0) * (y1 - y0) / 7)
+        d = " ".join(_blob(rng, rng.uniform(x0, x1), rng.uniform(y0, y1), r, n=7, rough=0.5)
+                     for r in np.clip(rng.lognormal(-1.8, 0.6, n), 0.06, 0.7))
+        svg.path(d, fill="none", stroke=ink, stroke_width=w * 0.8, opacity=0.55)
+        m = int((x1 - x0) * (y1 - y0) * 0.6)
+        d = "".join(f"M{x:.2f},{y:.2f}h0" for x, y in zip(rng.uniform(x0, x1, m), rng.uniform(y0, y1, m)))
+        svg.path(d, fill="none", stroke=ink, stroke_width=w * 1.4, stroke_linecap="round", opacity=0.35)
 
 
 def draw_layers(svg, sec, ch, cols, ground, ground_at, z_bottom, ink, seed=7, weight=0.08, top_cap=None,
@@ -92,7 +169,7 @@ def draw_layers(svg, sec, ch, cols, ground, ground_at, z_bottom, ink, seed=7, we
             svg.layer(layer_names[kind])
         cid = svg.clip_path(poly)
         svg.open_group(clip_path=cid)
-        _hatch(svg, kind, float(X[0]), float(X[-1]), float(sec.Y(np.nanmax(upper))), float(sec.Y(np.nanmin(lower))),
+        _texture(svg, kind, float(X[0]), float(X[-1]), float(sec.Y(np.nanmax(upper))), float(sec.Y(np.nanmin(lower))),
                ink, rng, weight)
         svg.close_group()
         # Boundary line along the layer's top where it lies below ground.

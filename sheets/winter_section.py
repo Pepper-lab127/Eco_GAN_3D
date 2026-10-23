@@ -73,8 +73,8 @@ def build(args):
     svg = Svg(Wp, Hp, background=GROUND)
 
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
-             geo_clay="GEOLOGY · LAKE CLAY, DASHES · 0.06 mm", geo_till="GEOLOGY · TILL, PEBBLES · 0.06 mm",
-             geo_shale="GEOLOGY · SHALE, LINES · 0.06 mm", geo_carbonate="GEOLOGY · CARBONATE, BRICK · 0.06 mm",
+             geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.06 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.06 mm",
+             geo_shale="GEOLOGY · SHALE, PARTINGS · 0.06 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.06 mm",
              canopy="WINTER CANOPY (LIDAR) · 0.05 mm", water="WINTER WATER SURFACES · 0.05 mm",
              column="WATER COLUMN, FADING · 0.06 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
              ice="ICE · EACH WINTER'S THICKEST · 0.1 mm", ground="GROUND (LIDAR) · 0.25 mm",

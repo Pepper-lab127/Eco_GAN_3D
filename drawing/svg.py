@@ -102,6 +102,13 @@ class Svg:
         )
         return f"url(#{cid})"
 
+    def blur(self, std_mm):
+        """A Gaussian blur filter (std in mm); returns its url for filter=."""
+        fid = self.uid("blur")
+        self.defs.append(f'<filter id="{fid}" x="-20%" y="-20%" width="140%" height="140%">'
+                         f'<feGaussianBlur stdDeviation="{_fmt(std_mm)}"/></filter>')
+        return f"url(#{fid})"
+
     def clip_path(self, d):
         cid = self.uid("clip")
         self.defs.append(f'<clipPath id="{cid}"><path d="{d}"/></clipPath>')

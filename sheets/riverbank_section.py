@@ -72,9 +72,10 @@ def build(args):
     sec = Section(m + 40, m + 70, args.scale, args.scale, args.z_top)
     svg = Svg(Wp, Hp)
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
-             geo_clay="GEOLOGY · LAKE CLAY, DASHES · 0.08 mm", geo_till="GEOLOGY · TILL, PEBBLES · 0.08 mm",
-             geo_shale="GEOLOGY · SHALE, LINES · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BRICK · 0.08 mm",
-             wind="SKY · WIND POINT CLOUD · 0.12 mm",
+             geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.08 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.08 mm",
+             geo_shale="GEOLOGY · SHALE, PARTINGS · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.08 mm",
+             wind="SKY · CALMER HOURS, CRISP · 0.12 mm", wind_mid="SKY · WINDIER HOURS, SOFT BLUR",
+             wind_strong="SKY · STRONGEST HOURS, BLURRED",
              water="WATER LEVELS · 0.05 mm", flood="1997 CREST (EST.), DASHED · 0.12 mm",
              canopy="CANOPY STIPPLE (LIDAR) · 0.2 mm", trunks="TRUNKS · 0.25 mm",
              roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
@@ -113,7 +114,7 @@ def build(args):
     # Each hour scatters points along its wind: more points for a stronger
     # wind, gathering toward the downwind end, loosely jittered, so the sky
     # reads as a density of air moving rather than as drawn lines.
-    xs_pts, zs_pts = [], []
+    xs_pts, zs_pts, sp_pts = [], [], []
     for t, deg, spd in gusts:
         toward = math.radians(deg + 180)               # wind blows toward
         u = math.sin(toward) * spd * wind_m             # + toward east (right)
@@ -124,15 +125,30 @@ def build(args):
         f = rng.beta(2.2, 1.0, n)                       # fraction along the wind, denser downwind
         xs_pts.append(x + f * u + rng.normal(0, args.jitter_x, n))
         zs_pts.append(z + f * w + rng.normal(0, args.jitter_z, n))
+        sp_pts.append(np.full(n, spd))
     xs_pts = np.concatenate(xs_pts) % width             # wrap across the frame
     zs_pts = np.concatenate(zs_pts)
+    sp_pts = np.concatenate(sp_pts)
     keep = (zs_pts > ground_top + 1) & (zs_pts < args.z_top)
     clip = svg.clip_rect(sec.X(0), sec.Y(args.z_top), width * sec.sh, (args.z_top - args.z_bottom) * sec.sv)
-    svg.layer(L["wind"])
-    svg.open_group(clip_path=clip)
-    svg.path("".join(f"M{sec.X(x):.2f},{sec.Y(z):.2f}h0" for x, z in zip(xs_pts[keep], zs_pts[keep])),
-             fill="none", stroke=INK, stroke_width=args.wind_dot, stroke_linecap="round", opacity=0.7)
-    svg.close_group()
+    # Tiers by wind speed: calm hours crisp, the strongest hours blurred into haze.
+    all_speeds = np.array([g[2] for g in gusts])
+    cuts = np.percentile(all_speeds, args.blur_tiers)
+    # Blurred points are drawn larger and darker, since blurring spreads their ink.
+    tiers = [(0, cuts[0], 0.0, 1.0, 0.75), (cuts[0], cuts[1], args.blur[0], 2.4, 0.9),
+             (cuts[1], np.inf, args.blur[1], 4.5, 1.0)]
+    for (lo, hi, blur, size, op), key in zip(tiers, ("wind", "wind_mid", "wind_strong")):
+        sel = keep & (sp_pts >= lo) & (sp_pts < hi)
+        svg.layer(L[key])
+        svg.open_group(clip_path=clip)
+        if blur:
+            svg.open_group(filter=svg.blur(blur))
+        svg.path("".join(f"M{sec.X(x):.2f},{sec.Y(z):.2f}h0" for x, z in zip(xs_pts[sel], zs_pts[sel])),
+                 fill="none", stroke=INK, stroke_width=args.wind_dot * size, stroke_linecap="round", opacity=op)
+        if blur:
+            svg.close_group()
+        svg.close_group()
+        L[key + "_range"] = (lo, hi)
 
     # Water below the dam: every open-water day's level, from the bank out to the frame.
     dl, lv, _ = hydrometric.load_wsc_daily(args.level_csv, "level")
@@ -224,7 +240,8 @@ def build(args):
              size=2.4, fill=INK, spacing=0.3)
     notes = [
         (f"Sky: each hour's wind at {sky_station.title()} scatters points along its west–east travel ({wind_m:g} m per km/h), "
-         f"{args.points_per_kmh:g} points per km/h, gathering downwind: dense air is strong, steady wind. Height in the sky is "
+         f"{args.points_per_kmh:g} points per km/h, gathering downwind; hours above the {args.blur_tiers[0]:g}th and "
+         f"{args.blur_tiers[1]:g}th percentile of speed are increasingly blurred. Height in the sky is "
          "time (months at right); position across is scattered." if hourly else
          f"Sky: each day's strongest gust at {sky_station.title()} (recorded when over about 31 km/h) scatters points along its "
          f"west–east travel, {wind_m:g} m per km/h; positions in the sky are scattered, not measured."),
@@ -283,6 +300,9 @@ def main():
     ap.add_argument("--jitter-x", type=float, default=1.2, help="m of horizontal scatter of sky points")
     ap.add_argument("--jitter-z", type=float, default=0.35, help="m of vertical scatter of sky points")
     ap.add_argument("--wind-dot", type=float, default=0.12, help="sky point diameter, mm")
+    ap.add_argument("--blur-tiers", type=float, nargs=2, default=[60, 90],
+                    help="wind-speed percentiles where blurring starts and strengthens")
+    ap.add_argument("--blur", type=float, nargs=2, default=[0.25, 0.7], help="blur (mm) of the two windier tiers")
     ap.add_argument("--min-tree", type=float, default=6.0, help="m canopy height counted as a tree top")
     ap.add_argument("--tree-spacing", type=int, default=6, help="m between tree tops")
     ap.add_argument("--crown-base", type=float, default=0.4, help="crown base as a share of tree height")
