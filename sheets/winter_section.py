@@ -25,6 +25,7 @@ import os
 import numpy as np
 
 from drawing import climate, hydrometric, terrain
+from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile, water_edges
 from drawing.svg import PAPER, Svg, scale_bar
 
@@ -34,7 +35,7 @@ GROUND = "#0b0b0b"
 
 
 def build(args):
-    dtm, transform, crs = terrain.load_dem(args.dem)
+    dtm, key_transform, key_crs = terrain.load_dem(args.dem)
     dsm, _, _ = terrain.load_dem(args.dsm)
     row, c0, c1 = args.row, args.cols[0], args.cols[1]
     ch, ground = profile(dtm, row, c0, c1)
@@ -76,6 +77,7 @@ def build(args):
              column="WATER COLUMN, FADING · 0.06 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
              ice="ICE · EACH WINTER'S THICKEST · 0.1 mm", ground="GROUND (LIDAR) · 0.25 mm",
              margin="MARGIN · ICE TICKS · 0.15 mm", detail="DETAIL · ICE GROWTH LINES · 0.05–0.12 mm",
+             key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BARS", text="TEXT")
     for name in L.values():
         svg.layer(name)
@@ -202,7 +204,7 @@ def build(args):
 
     # Title block.
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT LOCKPORT — WINTER SECTION", size=5.2, fill=INK, spacing=0.4)
+    svg.text(tx, ty, "RED RIVER AT LOCKPORT — WINTER SECTION A–A′", size=5.2, fill=INK, spacing=0.4)
     svg.text(tx, ty + 7, f"WEST TO EAST, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · H 1:{args.h_scale:,} · "
              f"V 1:{args.v_scale:,} (HEIGHTS ×{args.h_scale / args.v_scale:.3g})", size=2.4, fill=INK, spacing=0.3)
     yrs = f"{usable[0]['year']}–{usable[-1]['year'] + 1}"
@@ -226,6 +228,20 @@ def build(args):
     vx = sec.x0 + 100 * sec.sh + 45
     svg.line(vx, sb_y + 0.8, vx, sb_y + 0.8 - 5 * sec.sv, stroke=INK, stroke_width=0.15)
     svg.text(vx + 2, sb_y + 0.8, "5 m (vertical)", size=1.8, fill=INK)
+
+    # Key plan: where the section is cut. The other section's line is dashed.
+    from sheets.calendar_cut import true_north_angle
+    kw = args.key_window
+    kx, ky = Wp - m - 122, Hp - m - 125
+    key_plan(svg, dtm, kx, ky, kw, args.row, args.cols, args.dam_row, args.dam_cols, INK,
+             scale=args.key_scale, angle=true_north_angle(key_transform, key_crs, (kw[0] + kw[1]) / 2, (kw[2] + kw[3]) / 2),
+             other_cuts=[(1840, (1552, 1675))], layers=dict(lines=L["key_lines"], cut=L["key_cut"], text=L["text"]),
+             label=("A", "A′"), names=[("DAM", 2105, 1700, 0), ("LOCK", 2240, 1200, -90), ("FLOODWAY", 2700, 2470, -90), ("RED RIVER", 2700, 1250, -60)])
+    # The cut's letters at both ends of the section.
+    svg.layer(L["text"])
+    for c, letter, anchor in ((0, ("A", "A′")[0], "end"), (len(ch), ("A", "A′")[1], "start")):
+        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) + 1, letter, size=4.5,
+                 fill=INK, anchor=anchor)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     svg.save(args.out)
@@ -257,6 +273,11 @@ def main():
     ap.add_argument("--detail-span", type=float, default=380.0, help="m of channel width shown in the detail")
     ap.add_argument("--label-west", type=float, default=150.0, help="chainage of the west bank label")
     ap.add_argument("--label-east", type=float, default=470.0, help="chainage of the east bank label")
+    ap.add_argument("--key-window", type=int, nargs=4, default=[1150, 2950, 700, 2900],
+                    metavar=("ROW0", "ROW1", "COL0", "COL1"), help="DEM area shown in the key plan")
+    ap.add_argument("--key-scale", type=int, default=20000)
+    ap.add_argument("--dam-row", type=int, default=2135)
+    ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD")
     ap.add_argument("--out", default="outputs/sheets/04a_winter_section.svg")
     build(ap.parse_args())

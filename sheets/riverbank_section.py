@@ -24,6 +24,7 @@ import os
 import numpy as np
 
 from drawing import climate, hydrometric, terrain
+from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile
 from drawing.svg import PAPER, Svg, scale_bar
 
@@ -59,7 +60,7 @@ def roots(rng, x, z, depth, spread, level=0, max_level=4):
 
 
 def build(args):
-    dtm, _, _ = terrain.load_dem(args.dem)
+    dtm, key_transform, key_crs = terrain.load_dem(args.dem)
     dsm, _, _ = terrain.load_dem(args.dsm)
     ch, ground = profile(dtm, args.row, *args.cols)
     _, top = profile(dsm, args.row, *args.cols)
@@ -75,6 +76,7 @@ def build(args):
              water="WATER LEVELS · 0.05 mm", flood="1997 CREST (EST.), DASHED · 0.12 mm",
              canopy="CANOPY STIPPLE (LIDAR) · 0.2 mm", trunks="TRUNKS · 0.25 mm",
              roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
+             key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BAR", text="TEXT")
     for name in L.values():
         svg.layer(name)
@@ -209,7 +211,7 @@ def build(args):
              size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.6)
 
     tx, ty = m + 8, m + 12
-    svg.text(tx, ty, "RED RIVER AT LOCKPORT — RIVERBANK SECTION", size=5.2, fill=INK, spacing=0.4)
+    svg.text(tx, ty, "RED RIVER AT LOCKPORT — RIVERBANK SECTION B–B′", size=5.2, fill=INK, spacing=0.4)
     svg.text(tx, ty + 7, f"EAST BANK, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · 1:{args.scale:,} (TRUE SCALE)",
              size=2.4, fill=INK, spacing=0.3)
     notes = [
@@ -232,6 +234,20 @@ def build(args):
 
     svg.layer(L["scale"])
     scale_bar(svg, sec.x0, Hp - m - 9, 20 * sec.sh, 20, "m", color=INK)
+
+    # Key plan: where the section is cut. The other section's line is dashed.
+    from sheets.calendar_cut import true_north_angle
+    kw = args.key_window
+    kx, ky = Wp - m - 122, Hp - m - 125
+    key_plan(svg, dtm, kx, ky, kw, args.row, args.cols, args.dam_row, args.dam_cols, INK,
+             scale=args.key_scale, angle=true_north_angle(key_transform, key_crs, (kw[0] + kw[1]) / 2, (kw[2] + kw[3]) / 2),
+             other_cuts=[(1840, (1150, 1850))], layers=dict(lines=L["key_lines"], cut=L["key_cut"], text=L["text"]),
+             label=("B", "B′"), names=[("DAM", 2105, 1700, 0), ("LOCK", 2240, 1200, -90), ("FLOODWAY", 2700, 2470, -90), ("RED RIVER", 2700, 1250, -60)])
+    # The cut's letters at both ends of the section.
+    svg.layer(L["text"])
+    for c, letter, anchor in ((0, ("B", "B′")[0], "end"), (len(ch), ("B", "B′")[1], "start")):
+        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) + 1, letter, size=4.5,
+                 fill=INK, anchor=anchor)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     svg.save(args.out)
@@ -259,6 +275,11 @@ def main():
     ap.add_argument("--crown-base", type=float, default=0.4, help="crown base as a share of tree height")
     ap.add_argument("--stipple", type=float, default=6.0, help="canopy dots per m of crown per m")
     ap.add_argument("--seed", type=int, default=1840)
+    ap.add_argument("--key-window", type=int, nargs=4, default=[1150, 2950, 700, 2900],
+                    metavar=("ROW0", "ROW1", "COL0", "COL1"), help="DEM area shown in the key plan")
+    ap.add_argument("--key-scale", type=int, default=20000)
+    ap.add_argument("--dam-row", type=int, default=2135)
+    ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD_P")
     ap.add_argument("--out", default="outputs/sheets/04b_riverbank_section.svg")
     build(ap.parse_args())
