@@ -33,6 +33,8 @@ def load_eccc_daily(pattern):
                     snow_ground=num(row.get("Snow on Grnd (cm)")),
                     gust_dir=num(row.get("Dir of Max Gust (10s deg)")),
                     gust_spd=num(row.get("Spd of Max Gust (km/h)")),
+                    snow=num(row.get("Total Snow (cm)")),
+                    precip=num(row.get("Total Precip (mm)")),
                 )
     return days, station
 
