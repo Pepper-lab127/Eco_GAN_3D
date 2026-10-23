@@ -130,8 +130,8 @@ def build(args):
         d = " ".join(points_to_path(x0 + (ln[::2, 0] + 0.5) * s, y0 + (ln[::2, 1] + 0.5) * s)
                      for ln in lines if len(ln) > 8)
         index = lv % 5 == 0
-        svg.path(d, fill="none", stroke="#6e6e6e", stroke_width=args.contour * (1.8 if index else 1.0),
-                 opacity=0.95 if index else 0.75)
+        svg.path(d, fill="none", stroke="#7a7a7a", stroke_width=args.contour * (1.6 if index else 1.0),
+                 opacity=0.9 if index else 0.65)
 
     # A reach with no record: its lidar water outlined, dotted.
     if not args.floodway_csv and water_fw.any():
@@ -260,7 +260,7 @@ def main():
     ap.add_argument("--volume", type=float, default=100_000, help="m³ of water per dot")
     ap.add_argument("--front", type=float, default=12.0, help="m over which each day's dots thin from the edge")
     ap.add_argument("--dot", type=float, default=0.18, help="dot diameter in mm")
-    ap.add_argument("--contour", type=float, default=0.1, help="contour line weight in mm (5 m contours 1.8x)")
+    ap.add_argument("--contour", type=float, default=0.075, help="contour line weight in mm (5 m contours 1.6x)")
     ap.add_argument("--graph", type=float, default=0.18, help="timeline tick weight in mm")
     ap.add_argument("--seed", type=int, default=1997)
     # Rows/cols of the DEM: from the floodway outlet north of the dam to
