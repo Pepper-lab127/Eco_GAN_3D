@@ -51,6 +51,9 @@ def build(args):
     dam = (args.dam_row - r0) // st
     _, wu, wd = terrain.river_reaches(a, dam, args.water_below, min_cells=150, keep_near=10)
     lidar = wu | wd
+    bed = np.full(a.shape, np.nan)
+    if args.bed and os.path.exists(args.bed):
+        bed = terrain.load_dem(args.bed)[0][r0:r1:st, c0:c1:st]
     bar = np.zeros(a.shape, bool)
     bar[dam - 1:dam + 2, (args.dam_cols[0] - c0) // st:(args.dam_cols[1] - c0) // st] = True
 
@@ -96,8 +99,13 @@ def build(args):
         level = np.where(dn | (extra if extra is not None else False), day["dn"], day["up"])
         dist = ndimage.distance_transform_edt(dom) * st
         d = level - a
-        d = np.where(lidar, d + np.minimum(args.max_depth, args.bed_slope * dist), d)
-        return np.clip(np.nan_to_num(d, nan=0.05), 0.05, None)
+        proxy = d + np.minimum(args.max_depth, args.bed_slope * dist)
+        # Chart-derived bed where it exists, else the assumed deepening.
+        d = np.where(lidar, np.where(np.isfinite(bed), np.maximum(level - bed, d), proxy), d)
+        d = np.clip(np.nan_to_num(d, nan=0.05), args.min_depth, None)
+        # Through the dam the water keeps the depth it has on either side (the
+        # lidar shows the structure, not the gate openings).
+        return np.where(bar, ndimage.maximum_filter(np.where(bar, 0, d), size=7), d)
 
     for day in days:
         up, dn, cross = wetted(day)
@@ -319,8 +327,9 @@ def build(args):
         "Faint lines: ground contours every metre (lidar).",
         "ESTIMATE, not a hydraulic model: each day's flow spread over its wetted area in proportion to depth^5/3 (Manning), "
         "scaled to the measured total. Eddies, jets through the dam gates and backwater are not modelled.",
-        f"The riverbed is not surveyed: in the channel, depth grows from the lidar water surface by {args.bed_slope:g} m per metre "
-        f"from the bank, to at most {args.max_depth:g} m more. Wetted areas as on sheet 05.",
+        "Riverbed: depth soundings digitized off a Navionics chart (feet, taken below the summer pool; chart datum not stated; "
+        f"not a survey); beyond the chart, depth grows {args.bed_slope:g} m per metre from the bank to {args.max_depth:g} m more. "
+        "Wetted areas as on sheet 05.",
         "Flow at Lockport (05OJ010) includes the floodway, which joins below the dam. On the typical day the floodway is "
         f"closed; in 1997 its share is the published peak (about 1,800 m³/s), carried by the floodway filled {args.floodway_depth:g} m "
         "over its bed (assumed) to its outlet.",
@@ -358,6 +367,8 @@ def main():
     ap.add_argument("--floodway-depth", type=float, default=7.0,
                     help="m of water assumed over the floodway bed at the peak")
     ap.add_argument("--floodway-reach", type=int, default=90, help="m either side of the bed the floodway may fill")
+    ap.add_argument("--bed", default="data/lockport/bathymetry/bed_from_chart.tif")
+    ap.add_argument("--min-depth", type=float, default=0.3, help="shallowest water depth used, m")
     ap.add_argument("--max-depth", type=float, default=6.0)
     ap.add_argument("--bed-slope", type=float, default=0.08)
     ap.add_argument("--per-line", type=float, default=16.0, help="m³/s carried by each streamline")

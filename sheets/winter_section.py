@@ -76,7 +76,7 @@ def build(args):
              geo_clay="GEOLOGY · LAKE CLAY, VARVES · 0.06 mm", geo_till="GEOLOGY · TILL, CLASTS · 0.06 mm",
              geo_shale="GEOLOGY · SHALE, PARTINGS · 0.06 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.06 mm",
              canopy="WINTER CANOPY (LIDAR) · 0.05 mm", water="WINTER WATER SURFACES · 0.05 mm",
-             column="WATER COLUMN, FADING · 0.06 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
+             column="WATER COLUMN, FADING · 0.06 mm", bed="RIVERBED FROM CHART, DASHED · 0.2 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
              ice="ICE · EACH WINTER'S THICKEST · 0.1 mm", ground="GROUND (LIDAR) · 0.25 mm",
              margin="MARGIN · ICE TICKS · 0.15 mm", detail="DETAIL · ICE GROWTH LINES · 0.05–0.12 mm",
              key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
@@ -103,17 +103,32 @@ def build(args):
             a, b = water_edges(for_edges, z, mid)
             svg.line(sec.X(a), sec.Y(z), sec.X(b + 1), sec.Y(z), stroke=INK, stroke_width=0.05, opacity=0.18)
 
-    # Water column under the ice: hairlines fading with depth, no bed.
+    # Riverbed from the chart soundings where available; elsewhere unknown.
+    bed = np.full(width, np.nan)
+    if args.bed and os.path.exists(args.bed):
+        bed_dem, _, _ = terrain.load_dem(args.bed)
+        bed = bed_dem[row, c0:c1]
+    bed = np.where(in_channel, bed, np.nan)
+
+    # Water column under the ice: hairlines from under the ice to the bed, fading
+    # with depth; where there is no bed, they fade out with none.
     svg.layer(L["column"])
     a, b = water_edges(for_edges, lidar_water, mid)
     depth = args.column_depth
     steps = 12
     for c in np.arange(a + 2, b, args.column_spacing):
+        zb = bed[int(c)] if bed[int(c)] == bed[int(c)] else lidar_water - 0.8 - depth
+        top = lidar_water - 0.8
+        if zb >= top:
+            continue
         for k in range(steps):
-            z0 = lidar_water - 0.8 - depth * k / steps
-            z1 = lidar_water - 0.8 - depth * (k + 1) / steps
+            z0 = top - (top - zb) * k / steps
+            z1 = top - (top - zb) * (k + 1) / steps
             svg.line(sec.X(c), sec.Y(z0), sec.X(c), sec.Y(z1), stroke=INK, stroke_width=0.06,
-                     opacity=round(0.45 * (1 - k / steps), 3))
+                     opacity=round(0.5 * (1 - 0.7 * k / steps), 3))
+    if np.isfinite(bed).any():
+        svg.layer(L["bed"])
+        svg.path(sec.path(ch, bed), fill="none", stroke=INK, stroke_width=0.2, stroke_dasharray="1.2 0.5")
 
     # Ice: each winter's thickest day as an outlined slab under that day's water level.
     svg.layer(L["ice"])
@@ -135,7 +150,7 @@ def build(args):
 
     # Geology from the two well logs, left blank under the unsurveyed riverbed.
     cols = np.arange(c0, c1)
-    bed_cap = np.where(in_channel, lidar_water - 0.8 - args.column_depth, np.inf)
+    bed_cap = np.where(in_channel, np.where(np.isfinite(bed), bed, lidar_water - 0.8 - args.column_depth), np.inf)
     geology.draw_layers(svg, sec, ch, cols, ground, lambda c: float(dtm[row, int(c)]), args.z_bottom, INK,
                         weight=0.06, top_cap=bed_cap,
                         layer_names={k: L[f"geo_{k}"] for k in geology.LAYERS})
@@ -205,8 +220,13 @@ def build(args):
     svg.text(sec.X(b + 1) + 3, sec.Y(z - hgt / 2) + 0.6, f"ICE {coldest['year']}–{str(coldest['year'] + 1)[2:]} · "
              f"{hgt:.2f} m · {pk.strftime('%b %d').upper()}", size=1.8, fill=INK)
     a, b = water_edges(for_edges, lidar_water, mid)
-    svg.text(sec.X((a + b) / 2), sec.Y(lidar_water - 0.8 - depth * 0.55), "WATER COLUMN · DEPTH NOT SURVEYED",
-             size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.8)
+    if np.isfinite(bed).any():
+        k = int(np.nanargmin(bed))
+        svg.text(sec.X(k), sec.Y(bed[k]) + 4, f"RIVERBED FROM CHART SOUNDINGS · DEEPEST {lidar_water - bed[k]:.1f} M BELOW THE ICE-SEASON WATER",
+                 size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.85)
+    else:
+        svg.text(sec.X((a + b) / 2), sec.Y(lidar_water - 0.8 - depth * 0.55), "WATER COLUMN · DEPTH NOT SURVEYED",
+                 size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.8)
     for name, w in geology.LOCKPORT_WELLS.items():
         if c0 <= w["col"] < c1:
             x = sec.X(w["col"] - c0)
@@ -230,8 +250,8 @@ def build(args):
         f"a typical value for rivers under snow (range about 0.014–0.017); daily mean temperature at {station_wx.title()}.",
         "Each winter's thickest ice is outlined under that day's water level; the coldest winter is filled, with a line for the "
         "underside of its ice on each day.",
-        "The lidar stops at the water surface: the water column is drawn fading, with no bed, until a surveyed cross-section "
-        "is available. Geology: two drillers' logs (Groundwater Information Network), hung from the lidar ground at each "
+        "The lidar stops at the water surface; the riverbed (dashed) is from depth soundings digitized off a Navionics chart "
+        "(feet, taken below the summer pool, 218.2 m below the dam; chart datum not stated; not a survey). Geology: two drillers' logs (Groundwater Information Network), hung from the lidar ground at each "
         "end of the section and joined in straight lines between; the shale thins out westward.",
         "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information Network.",
     ]
@@ -270,6 +290,8 @@ def main():
     ap.add_argument("--dem", default="data/lockport/dem/lockport_dtm_1m.tif")
     ap.add_argument("--dsm", default="data/lockport/dem/lockport_dsm_1m.tif")
     ap.add_argument("--level-csv", default="data/lockport/daily_05OJ010.csv")
+    ap.add_argument("--bed", default="data/lockport/bathymetry/bed_from_chart.tif",
+                    help="riverbed GeoTIFF (tools/build_bed.py); missing: no bed drawn")
     ap.add_argument("--climate", default="data/lockport/climate/en_climate_daily_MB_5023222_*.csv")
     ap.add_argument("--row", type=int, default=1840, help="DEM row of the section line")
     ap.add_argument("--cols", type=int, nargs=2, default=[1150, 1850], help="DEM columns, west to east")

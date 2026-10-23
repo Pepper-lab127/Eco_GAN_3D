@@ -229,7 +229,15 @@ def build(args):
     # Geology from the two well logs; blank under the unsurveyed riverbed.
     cols = np.arange(*args.cols)
     river = ground <= float(np.nanmin(ground)) + 0.15
-    bed_cap = np.where(river, float(np.nanmin(ground)) - 6.0, np.inf)
+    bed_row = np.full(len(ch), np.nan)
+    if os.path.exists(args.bed):
+        bed_dem, _, _ = terrain.load_dem(args.bed)
+        bed_row = bed_dem[args.row, args.cols[0]:args.cols[1]]
+    bed_cap = np.where(river, np.where(np.isfinite(bed_row), bed_row, float(np.nanmin(ground)) - 6.0), np.inf)
+    if np.isfinite(np.where(river, bed_row, np.nan)).any():
+        svg.layer(L["ground"])
+        svg.path(sec.path(ch, np.where(river, bed_row, np.nan)), fill="none", stroke=INK, stroke_width=0.2,
+                 stroke_dasharray="1.2 0.5")
     geology.draw_layers(svg, sec, ch, cols, ground, lambda c: float(dtm[args.row, int(c)]), args.z_bottom, INK,
                         weight=0.08, top_cap=bed_cap, layer_names={k: L[f"geo_{k}"] for k in geology.LAYERS})
     svg.layer(L["text"])
@@ -286,6 +294,7 @@ def main():
     ap.add_argument("--dem", default="data/lockport/dem/lockport_dtm_1m.tif")
     ap.add_argument("--dsm", default="data/lockport/dem/lockport_dsm_1m.tif")
     ap.add_argument("--level-csv", default="data/lockport/daily_05OJ010.csv")
+    ap.add_argument("--bed", default="data/lockport/bathymetry/bed_from_chart.tif")
     ap.add_argument("--climate", default="data/lockport/climate/en_climate_daily_MB_5023222_*.csv")
     ap.add_argument("--row", type=int, default=1840)
     ap.add_argument("--cols", type=int, nargs=2, default=[1552, 1675], help="DEM columns, water's edge to bank top")

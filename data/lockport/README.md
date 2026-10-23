@@ -78,3 +78,21 @@ pip install rasterio
 python tools/fetch_hrdem.py                  # Lockport defaults
 python tools/fetch_hrdem.py --keep-projects  # also each survey on its own
 ```
+
+## Riverbed (sheets 01, 04a, 04b)
+
+`bathymetry/chart_soundings.csv` holds depths (feet) read off a Navionics
+chart screenshot of the dam area, with each number's pixel position. The
+screenshot itself is not kept in the repository. `bathymetry/chart_transform.json`
+places the chart on the lidar grid (scale ~1.0 m/pixel, rotation ~1.9°,
+fitted by matching the chart's water edge to the lidar's; mean misfit
+~12 m). `bathymetry/bed_from_chart.tif` is the bed: soundings plus zero depth
+along the chart's water edge, interpolated and smoothed, with depths taken
+below an assumed summer pool (222.9 m above the dam, 218.2 m below), since
+the chart's datum is not stated. Not a survey; not for navigation.
+
+```
+python tools/register_chart.py CHART.webp --guess 1.03 2140 1314 768 520
+python tools/build_bed.py CHART.webp
+```
+
