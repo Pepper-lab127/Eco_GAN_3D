@@ -29,6 +29,15 @@ the start of the break-up phase on the time axis.
   about 1 cm of 05OJ021 (median -0.012 m). Useful as a cross-check or to
   extend the record, not for the river below the dam (which the lidar shows
   about 2 m lower, ~217.6 m).
+- `daily_05OJ010.csv`: station **05OJ010**, below the dam. Daily water
+  level 2002-2008 (year-round, ~217-218 m normally, matching the lidar water
+  below the dam) and daily discharge 1962-2008 (year-round, with `B` ice
+  flags; peak 4,320 m³/s on 1997-05-04). Sheet 02 floods the reach below the
+  dam from its levels; sheet 03 can be drawn from its flow:
+
+  ```
+  python -m sheets.hydrograph_surface --csv data/lockport/daily_05OJ010.csv
+  ```
 
 ## Elevation (sheets 01, 02, 04, 05)
 
