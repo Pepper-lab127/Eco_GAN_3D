@@ -106,6 +106,11 @@ Sheet 02, calendar cut (1 m lidar terrain flooded with monthly gauge levels):
 
 python -m sheets.calendar_cut
 
+Sheet 05, the 1997 flood as particles (one dot per 100,000 m³ of daily flow,
+gathered along each day's water's edge):
+
+python -m sheets.flood_particles
+
 Sheet 03, hydrograph surface:
 
 python -m sheets.hydrograph_surface --csv data/lockport/daily.csv

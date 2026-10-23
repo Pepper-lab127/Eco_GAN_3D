@@ -49,16 +49,10 @@ def build(args):
     a = dem[r0:r1, c0:c1]
     H, W = a.shape
     dam = args.dam_row - r0                 # window row of the dam crest
-    above = np.arange(H)[:, None] > dam     # upstream of the dam (south)
 
     # The lidar's flattened river surface is water whatever the gauge says,
-    # and upstream it is where every flood starts. Each reach is found
-    # separately: the dam holds them at different levels.
-    def river(mask):
-        return terrain.flat_water(np.where(mask, a, np.nan), below=args.water_below,
-                                  min_cells=1000, largest_only=True)
-    water_up = river(above)
-    water_down = river(~above) if dam >= 0 else np.zeros_like(water_up)
+    # and it is where every flood starts; the dam splits it into two reaches.
+    above, water_up, water_down = terrain.river_reaches(a, dam, args.water_below)
     lidar_water = (float(np.nanmin(a[water_up])), float(np.nanmax(a[water_up])))
     lidar_down = float(np.nanmedian(a[water_down])) if water_down.any() else None
     # Each reach floods from its own lidar water with its own gauge, and the

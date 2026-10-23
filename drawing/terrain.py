@@ -99,3 +99,29 @@ def png_data_uri(gray):
     buf = io.BytesIO()
     Image.fromarray(gray, mode="L").save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def river_reaches(a, dam, below, min_cells=1000):
+    """Split a window at a dam row into the reach above it (south, larger
+    rows) and below it, and find each reach's lidar water separately: the
+    dam holds them at different levels.
+
+    Returns (above, water_up, water_down); above is a boolean row mask
+    broadcast to the window.
+    """
+    above = np.broadcast_to(np.arange(a.shape[0])[:, None] > dam, a.shape)
+
+    def river(mask):
+        return flat_water(np.where(mask, a, np.nan), below=below,
+                          min_cells=min_cells, largest_only=True)
+
+    water_up = river(above)
+    water_down = river(~above) if dam >= 0 else np.zeros(a.shape, bool)
+    return above, water_up, water_down
+
+
+def smooth_contours(a, levels, sigma=2.0):
+    """Contour lines of a lightly smoothed DEM: {level: [arrays of (col, row)]}."""
+    z = ndimage.gaussian_filter(np.nan_to_num(a, nan=np.nanmean(a)), sigma)
+    gen = contourpy.contour_generator(z=z, name="serial")
+    return {level: gen.lines(level) for level in levels}
