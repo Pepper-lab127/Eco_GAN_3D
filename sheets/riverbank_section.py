@@ -188,6 +188,13 @@ def build(args):
         svg.text(sec.X(width / 2), sec.Y(args.z_top - 3), f"SKY · {len(gusts):,} HOURS OF WIND, "
                  f"{t0.strftime('%b %d %Y').upper()} – {t1.strftime('%b %d %Y').upper()}", size=2.0, fill=INK,
                  anchor="middle", spacing=0.2)
+        # Gaps of more than a week in the record are labelled, not left as calm.
+        times = [g[0] for g in hourly]
+        for ta, tb in zip(times, times[1:]):
+            if (tb - ta).days > 7:
+                zm = (sky_z(ta) + sky_z(tb)) / 2
+                svg.text(sec.X(width / 2), sec.Y(zm) + 0.6, f"NO WIND RECORD ON FILE · {ta.strftime('%b %d').upper()} – "
+                         f"{tb.strftime('%b %d').upper()}", size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.6)
         mo = dt.datetime(t0.year, t0.month, 1)
         while mo <= t1:
             if mo >= t0:
