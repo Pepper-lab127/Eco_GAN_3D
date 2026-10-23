@@ -96,3 +96,15 @@ python tools/register_chart.py CHART.webp --guess 1.03 2140 1314 768 520
 python tools/build_bed.py CHART.webp
 ```
 
+## Fish (winter section, future fish sheet)
+
+`ecology/manitoba_waterbody_data.csv`: Manitoba's waterbody table (angling
+guide data). Species lists, presence only, no counts or timing:
+
+- Red River (whole river, one record): 23 species, including walleye,
+  sauger, channel catfish, lake sturgeon, goldeye, mooneye, northern pike,
+  burbot, freshwater drum, white bass, bigmouth buffalo, common carp. Average
+  depth 4.5 m; stocked; inside an aquatic invasive species control zone.
+- Red River Floodway: 12 species.
+- Link to Manitoba's Red River angling/assessment map PDF in the file.
+
