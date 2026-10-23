@@ -176,3 +176,26 @@ def monthly_levels(dates, values, min_days=10):
             "median": float(np.median([v for vs in years.values() for v in vs])),
         }
     return out
+
+
+def fit_rating(dates_q, flows, syms_q, dates_h, levels, min_flow=50.0):
+    """Stage-flow (rating) relation from days with both records, ice days
+    (symbol B) excluded: level = a + b ln Q + c (ln Q)^2.
+
+    Returns (rating(q) -> level, rmse in m, (lowest, highest) flow fitted).
+    """
+    q_by_day = {d: (q, s) for d, q, s in zip(dates_q, flows, syms_q)}
+    pairs = [(q_by_day[d][0], h) for d, h in zip(dates_h, levels)
+             if h == h and d in q_by_day and q_by_day[d][0] == q_by_day[d][0] and q_by_day[d][1] != "B"]
+    if len(pairs) < 30:
+        raise ValueError("too few days with both flow and level to fit a rating")
+    q, h = np.array(pairs).T
+    x = np.log(np.maximum(q, min_flow))
+    coef, *_ = np.linalg.lstsq(np.vstack([np.ones_like(x), x, x * x]).T, h, rcond=None)
+    rmse = float(np.std(h - (coef[0] + coef[1] * x + coef[2] * x * x)))
+
+    def rating(flow):
+        lx = np.log(max(flow, min_flow))
+        return float(coef[0] + coef[1] * lx + coef[2] * lx * lx)
+
+    return rating, rmse, (float(q.min()), float(q.max()))
