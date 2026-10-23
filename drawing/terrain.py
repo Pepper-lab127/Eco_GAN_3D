@@ -45,7 +45,7 @@ def flood(a, level, sources):
 
 
 def flat_water(a, below, max_slope=0.02, min_cells=500, window=7, bridge=4,
-               tolerance=0.2, min_share=0.1, largest_only=False):
+               tolerance=0.2, min_share=0.1, largest_only=False, keep_near=0):
     """Lidar water surfaces: broad areas at a flight-day water level.
 
     Lidar returns little from water, so each survey flattens a river to its
@@ -55,7 +55,9 @@ def flat_water(a, below, max_slope=0.02, min_cells=500, window=7, bridge=4,
     which also catches the noisier parts of a flattened surface. Thin rings
     where a level crosses a bank are removed, and the result is grown by
     `bridge` cells to close seams between surveys. largest_only keeps just
-    the biggest body (the river), dropping ditches and ponds at similar heights.
+    the biggest body (the river), dropping ditches and ponds at similar heights;
+    keep_near also keeps bodies within that many cells of it (side channels and
+    creek mouths cut off from the river by a low sill).
     """
     gy, gx = np.gradient(np.nan_to_num(a, nan=np.nanmax(a)))
     steep = ndimage.maximum_filter(np.hypot(gx, gy), window)
@@ -82,7 +84,11 @@ def flat_water(a, below, max_slope=0.02, min_cells=500, window=7, bridge=4,
     if largest_only and water.any():
         labels, n = ndimage.label(water)
         sizes = ndimage.sum(water, labels, range(1, n + 1))
-        water = labels == np.argmax(sizes) + 1
+        main = labels == np.argmax(sizes) + 1
+        if keep_near:
+            near = ndimage.binary_dilation(main, iterations=keep_near)
+            main = np.isin(labels, np.unique(labels[near & water]))
+        water = main
     return water
 
 
@@ -101,7 +107,7 @@ def png_data_uri(gray):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def river_reaches(a, dam, below, min_cells=1000):
+def river_reaches(a, dam, below, min_cells=1000, keep_near=30):
     """Split a window at a dam row into the reach above it (south, larger
     rows) and below it, and find each reach's lidar water separately: the
     dam holds them at different levels.
@@ -113,7 +119,7 @@ def river_reaches(a, dam, below, min_cells=1000):
 
     def river(mask):
         return flat_water(np.where(mask, a, np.nan), below=below,
-                          min_cells=min_cells, largest_only=True)
+                          min_cells=min_cells, largest_only=True, keep_near=keep_near)
 
     water_up = river(above)
     water_down = river(~above) if dam >= 0 else np.zeros(a.shape, bool)

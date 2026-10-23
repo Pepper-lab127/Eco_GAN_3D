@@ -107,6 +107,15 @@ def build(args):
         return x_left + ((st["median"] - lowest_median) * args.shift if st else 0.0)
 
     svg = Svg(Wp, Hp)
+    # Layers by line weight, declared bottom to top so they stack in this order.
+    L = dict(frame="FRAME · 0.15 mm", terrain="BANDS · LIDAR TERRAIN (IMAGES)",
+             outline="BANDS · NO-RECORD OUTLINE, DASHED · 0.1 mm",
+             years="BANDS · YEAR LINES, WHITE · 0.06 mm", record="BANDS · RECORD LINES, WHITE · 0.14 mm",
+             dam="BANDS · DAM, WHITE DASHED · 0.15 mm", leaders="LEADERS AND FLAGS · 0.08–0.1 mm",
+             scale="SCALE BAR AND NORTH ARROW", text="TEXT")
+    for name in L.values():
+        svg.layer(name)
+    svg.layer(L["frame"])
     svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
 
     for i, month in enumerate(order):
@@ -118,9 +127,12 @@ def build(args):
 
         if not recorded:
             tone = np.where((water_up | water_down)[rs:re], 1.0, pale[rs:re])
+            svg.layer(L["terrain"])
             svg.image(bx, by, W * s, bh, terrain.png_data_uri((tone * 255).astype(np.uint8)))
+            svg.layer(L["outline"])
             svg.rect(bx, by, W * s, bh, fill="none", stroke=INK, stroke_width=0.1,
                      stroke_dasharray="0.4 0.8")
+            svg.layer(L["text"])
             svg.text(bx + W * s + 4, by + bh / 2 + 0.8, MONTHS[month - 1], size=2.6,
                      fill=INK, spacing=0.3, opacity=0.6)
             svg.text(bx + W * s + 14, by + bh / 2 + 0.8, "NO RECORD", size=1.7, fill=INK, opacity=0.6)
@@ -130,6 +142,7 @@ def build(args):
         for r in recorded:
             always = always | wet(r, min(r["stats"][month]["min"].values()))
         tone = np.where(always[rs:re], 1.0, dark[rs:re])
+        svg.layer(L["terrain"])
         svg.image(bx, by, W * s, bh, terrain.png_data_uri((tone * 255).astype(np.uint8)))
 
         # One line per year at that year's highest level this month.
@@ -145,6 +158,7 @@ def build(args):
                     rows = pts[:, 1] + rs
                     cut = rows <= dam + 0.75 if r is reaches["above"] else rows >= dam + 0.25
                     ys = np.where(cut, np.nan, by + (pts[:, 1] + 0.5) * s)
+                    svg.layer(L["record" if is_record else "years"])
                     svg.path(points_to_path(xs, ys), fill="none", stroke="#ffffff",
                              stroke_width=0.14 if is_record else 0.06,
                              opacity=1.0 if is_record else 0.75, stroke_linejoin="round")
@@ -152,13 +166,16 @@ def build(args):
         if st is None:
             continue
         # Left: median level, as on p.238's elevation column.
+        svg.layer(L["leaders"])
         svg.line(bx - 3, by + bh / 2, bx - 0.8, by + bh / 2, stroke=INK, stroke_width=0.1)
+        svg.layer(L["text"])
         svg.text(bx - 4, by + bh / 2 + 0.7, f"+{st['median']:.2f}", size=1.9, fill=INK, anchor="end")
 
         # Right: month, its range and which gauge.
         top_year = max(st["max"], key=st["max"].get)
         label_x = bx + W * s
-        flag(svg, label_x, by + bh / 2, MONTHS[month - 1], dx=3, color=INK, size=2.6)
+        flag(svg, label_x, by + bh / 2, MONTHS[month - 1], dx=3, color=INK, size=2.6,
+             line_layer=L["leaders"], text_layer=L["text"])
         svg.text(label_x + 17, by + bh / 2 + 0.7,
                  f"{len(st['max'])} YRS · LOW {min(st['min'].values()):.2f} · "
                  f"HIGH {st['max'][top_year]:.2f} ({top_year}) · {main['station']}",
@@ -170,11 +187,15 @@ def build(args):
         bx = band_x(i)
         by = y_top + i * (band_h + gap)
         y = by + (dam - band_rows[i] + 0.5) * s
+        svg.layer(L["dam"])
         svg.line(bx, y, bx + W * s, y, stroke="#ffffff", stroke_width=0.15, stroke_dasharray="1.2 0.8")
+        svg.layer(L["leaders"])
         svg.line(bx, y, bx - 3, y, stroke=INK, stroke_width=0.1)
+        svg.layer(L["text"])
         svg.text(bx - 4, y + 0.6, "DAM", size=1.7, fill=INK, anchor="end", spacing=0.2)
 
     # Place names, centred on a DEM row/col, rotated by angle (degrees).
+    svg.layer(L["text"])
     for text, row, col, angle in args.label or []:
         lr, lc = float(row) - r0, float(col) - c0
         if not (0 <= lr < H and 0 <= lc < W):
@@ -187,6 +208,7 @@ def build(args):
                  rotate=float(angle) or None)
 
     # Title block.
+    svg.layer(L["text"])
     tx, ty = m + 8, m + 12
     svg.text(tx, ty, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
     svg.text(tx, ty + 7, f"CALENDAR CUT — MONTHLY WATER LEVELS ON 1 M LIDAR TERRAIN, 1:{args.scale:,}",
@@ -213,6 +235,7 @@ def build(args):
         svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
 
     # Scale bar and north arrow.
+    svg.layer(L["scale"])
     sb_y = Hp - m - 9
     scale_bar(svg, x_left, sb_y, 500 * s, 500, "m", color=INK)
     north_arrow(svg, x_left + 500 * s + 14, sb_y + 0.5, r=3.0, color=INK,

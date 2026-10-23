@@ -161,30 +161,69 @@ def build(args):
     pw, ph = W * s, H * s
 
     svg = Svg(Wp, Hp)
+    tw = args.graph                             # timeline tick weight, mm
+    clip = svg.clip_rect(x0, y0, pw, ph)
+
+    def mm(w):
+        return f"{w:.3f}".rstrip("0").rstrip(".") + " mm"
+
+    # Layers by line weight, declared bottom to top so they stack in this order.
+    L = dict(
+        frame=f"FRAME · {mm(0.15)}",
+        contour=f"PLAN · CONTOURS 1 M · {mm(args.contour)}",
+        contour5=f"PLAN · CONTOURS 5 M · {mm(args.contour * 1.6)}",
+        bed=f"PLAN · FLOODWAY BED, DOTTED · {mm(0.1)}",
+        dots=f"PLAN · DOTS · {mm(args.dot)}",
+        first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
+        crest=f"PLAN · CREST EDGES · {mm(0.12)}",
+        dam=f"PLAN · DAM AND LOCK · {mm(0.35)}",
+        fit=f"TIMELINE · FIT LIMIT, DASHED · {mm(tw * 0.8)}",
+        ticks=f"TIMELINE · DAILY TICKS · {mm(tw)}",
+        peak=f"TIMELINE · PEAK DAY · {mm(tw * 2.5)}",
+        share=f"TIMELINE · FLOODWAY SHARE · {mm(tw * 3.2)}",
+        axis=f"TIMELINE · AXIS AND SCALE · {mm(tw * 1.6)}",
+        scale="SCALE BAR AND NORTH ARROW",
+        text="TEXT",
+    )
+    for name in L.values():
+        svg.layer(name)
+
+    def plan(key):
+        """Switch to a plan layer, clipped to the plan."""
+        svg.layer(L[key])
+        svg.open_group(clip_path=clip)
+
+    svg.layer(L["frame"])
     svg.rect(m, m, Wp - 2 * m, Hp - 2 * m, fill="none", stroke=INK, stroke_width=0.15)
-    svg.open_group(clip_path=svg.clip_rect(x0, y0, pw, ph))
 
     # Ground: faint contours of the river valley, one per metre.
     for lv, lines in terrain.smooth_contours(a, np.arange(216, 232, 1.0)).items():
         d = " ".join(points_to_path(x0 + (ln[::2, 0] + 0.5) * s, y0 + (ln[::2, 1] + 0.5) * s)
                      for ln in lines if len(ln) > 8)
         index = lv % 5 == 0
+        plan("contour5" if index else "contour")
         svg.path(d, fill="none", stroke="#7a7a7a", stroke_width=args.contour * (1.6 if index else 1.0),
                  opacity=0.9 if index else 0.65)
+        svg.close_group()
 
     # The floodway bed, dotted: where its dots go when its flow is known.
+    plan("bed")
     path = " ".join(points_to_path(x0 + (ln[:, 0] + 0.5) * s, y0 + (ln[:, 1] + 0.5) * s)
                     for ln in terrain.mask_lines(channel))
     svg.path(path, fill="none", stroke=INK, stroke_width=0.1, stroke_dasharray="0.3 0.6")
+    svg.close_group()
 
     # The dots, as zero-length round-capped strokes in one path.
+    plan("dots")
     d = "".join(f"M{x0 + x * s:.2f},{y0 + y * s:.2f}h0" for x, y in zip(xs_all, ys_all))
     svg.path(d, fill="none", stroke=INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.85)
+    svg.close_group()
 
     # Hairlines: each reach's first and highest edges.
     near_dam = ndimage.binary_dilation(barrier, iterations=2)
     for (name, d), wet in edges.items():
-        style = dict(stroke_width=0.12) if d != start else dict(stroke_width=0.08, stroke_dasharray="0.6 0.6")
+        first = d == start
+        style = dict(stroke_width=0.08, stroke_dasharray="0.6 0.6") if first else dict(stroke_width=0.12)
         lines = terrain.mask_lines(wet & ~barrier)
         # Leave the cut along the dam undrawn; it is not a water's edge.
         path = " ".join(points_to_path(
@@ -193,14 +232,19 @@ def build(args):
                               np.clip(ln[:, 0].round().astype(int), 0, W - 1)],
                      np.nan, y0 + (ln[:, 1] + 0.5) * s))
             for ln in lines)
+        plan("first" if first else "crest")
         svg.path(path, fill="none", stroke=INK, **style)
+        svg.close_group()
 
     # The dam.
     if 0 <= dam < H:
+        plan("dam")
         y = y0 + (dam + 0.5) * s
         svg.line(x0 + (args.dam_cols[0] - c0) * s, y, x0 + (args.dam_cols[1] - c0) * s, y,
                  stroke=INK, stroke_width=0.35)
-    svg.close_group()
+        svg.close_group()
+
+    svg.layer(L["text"])
     for text, row, col, angle in args.label:
         lr, lc = float(row) - r0, float(col) - c0
         if 0 <= lr < H and 0 <= lc < W:
@@ -211,28 +255,34 @@ def build(args):
     tx = x0 + pw + 30
     tick_max = min(Wp - m - tx - 40, 120.0)
     qmax = max(flow.values())
-    tw = args.graph                             # tick line weight, mm
+    svg.layer(L["text"])
     svg.text(tx, y0 - 7, "DAILY FLOW PASSING LOCKPORT", size=2.6, fill=INK, spacing=0.25)
     svg.text(tx, y0 - 3, f"STATION {hydrometric.station_id(args.flow_csv)} · ONE TICK PER DAY",
              size=2.0, fill=INK, opacity=0.75)
     if fw_flow:
         svg.text(tx, y0 + ph + 16, f"HEAVY: THE FLOODWAY'S SHARE ({hydrometric.station_id(args.floodway_flow)})",
                  size=2.0, fill=INK, opacity=0.85)
+    svg.layer(L["axis"])
     svg.line(tx, y0, tx, y0 + ph, stroke=INK, stroke_width=tw * 1.6)
     crest_up = reaches[0]["crest"]
     fw_peak = max(fw_flow, key=fw_flow.get) if fw_flow else None
     for k, d in enumerate(days):
         y = y0 + k / (len(days) - 1) * ph
+        svg.layer(L["peak" if d == peak_day else "ticks"])
         svg.line(tx, y, tx + flow[d] / qmax * tick_max, y, stroke=INK,
                  stroke_width=tw * 2.5 if d == peak_day else tw,
                  stroke_dasharray="0.6 0.6" if d in flow_filled else None)
         if fw_flow.get(d, 0) > 0:
+            svg.layer(L["share"])
             svg.line(tx, y, tx + fw_flow[d] / qmax * tick_max, y, stroke=INK, stroke_width=tw * 3.2)
+        if d.weekday() == 0 or d in (start, end):
+            svg.layer(L["ticks"])
+            svg.line(tx - 1.5, y, tx, y, stroke=INK, stroke_width=tw)
+        svg.layer(L["text"])
         if d == fw_peak:
             svg.text(tx + flow[d] / qmax * tick_max + 2.5, y + 0.8,
                      f"FLOODWAY {fw_flow[d]:,.0f} m³/s", size=2.0, fill=INK, opacity=0.85)
         if d.weekday() == 0 or d in (start, end):
-            svg.line(tx - 1.5, y, tx, y, stroke=INK, stroke_width=tw)
             svg.text(tx - 2.5, y + 0.8, d.strftime("%b %d").upper(), size=2.0, fill=INK, anchor="end")
         if d == peak_day:
             svg.text(tx + tick_max + 2.5, y + 0.8, f"{flow[d]:,.0f} m³/s · {d.strftime('%b %d').upper()}",
@@ -240,18 +290,21 @@ def build(args):
         if d == crest_up and d not in (peak_day, fw_peak):
             svg.text(tx + flow[d] / qmax * tick_max + 2.5, y - 1.4,
                      f"CREST ABOVE DAM {'EST. ' if up_est else ''}{level_up[d]:.2f} m", size=2.0, fill=INK, opacity=0.85)
-        if d == beyond[0] if beyond else False:
-            svg.line(tx + q_hi / qmax * tick_max, y0, tx + q_hi / qmax * tick_max, y0 + ph,
-                     stroke=INK, stroke_width=tw * 0.8, stroke_dasharray="0.8 1.0")
     if beyond:
         bx = tx + q_hi / qmax * tick_max
+        svg.layer(L["fit"])
+        svg.line(bx, y0, bx, y0 + ph, stroke=INK, stroke_width=tw * 0.8, stroke_dasharray="0.8 1.0")
+        svg.layer(L["text"])
         svg.text(bx + 1, y0 + ph + 3.2, f"{q_hi:,.0f} m³/s: HIGHEST FLOW IN THE STAGE-FLOW FIT",
                  size=1.9, fill=INK, opacity=0.75)
+    svg.layer(L["axis"])
     svg.line(tx, y0 + ph + 8, tx + 1000 / qmax * tick_max, y0 + ph + 8, stroke=INK, stroke_width=tw * 1.6)
+    svg.layer(L["text"])
     svg.text(tx, y0 + ph + 11.5, "1,000 m³/s", size=2.0, fill=INK)
 
     # Title block.
     n = len(xs_all)
+    svg.layer(L["text"])
     tx0, ty0 = m + 8, m + 12
     svg.text(tx0, ty0, "RED RIVER AT ST. ANDREWS LOCK AND DAM", size=5.2, fill=INK, spacing=0.4)
     svg.text(tx0, ty0 + 7, f"THE {start.year} FLOOD — EACH DOT {args.volume:,.0f} M³ OF WATER, "
@@ -291,6 +344,7 @@ def build(args):
     for j, note in enumerate(notes):
         svg.text(tx0, ty0 + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 7 else 0.65)
 
+    svg.layer(L["scale"])
     sb_y = Hp - m - 9
     scale_bar(svg, x0, sb_y, 500 * s, 500, "m", color=INK)
     north_arrow(svg, x0 + 500 * s + 14, sb_y + 0.5, r=3.0, color=INK,

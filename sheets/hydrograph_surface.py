@@ -86,15 +86,35 @@ def build(args):
     svg = Svg(W, H, background="#ffffff")
     frame_y0, frame_y1 = m, H - m
 
+    # Layers by line weight, declared bottom to top so they stack in this order.
+    L = dict(ground="GROUND (BLACK / WHITE)", phases="PHASE HAIRLINES · 0.06 mm",
+             # One layer: each year's dotted gaps must stay under the years in front of it.
+             years=f"YEAR LINES AND NO-RECORD DOTS · {args.line:g} mm",
+             axis="AXIS AND SCALE · 0.15 mm", ticks="AXIS TICKS · 0.06–0.12 mm",
+             flags="FLAGS (LEADERS AND LABELS) AND YEAR TICKS · 0.08 mm", frame="FRAME · 0.15 mm", text="TEXT")
+    for name in L.values():
+        svg.layer(name)
+
     def draw(ink, ground, clip):
-        svg.open_group(clip_path=clip)
+        def lay(key):
+            # Each layer gets its own copy of this half's clip.
+            if lay.open:
+                svg.close_group()
+            svg.layer(L[key])
+            svg.open_group(clip_path=clip)
+            lay.open = True
+        lay.open = False
+
+        lay("ground")
         svg.rect(m, frame_y0, W - 2 * m, frame_y1 - frame_y0, fill=ground)
 
         # Phase hairlines through the full height, like the kelp life-cycle sheet.
         for name, xs0, _, _ in axis.boundaries():
+            lay("phases")
             svg.line(xs0, frame_y0 + 52, xs0, bottom + 10, stroke=ink, stroke_width=0.06, opacity=0.55)
 
         # Stacked years, back to front; the fill hides lines behind each crest.
+        lay("years")
         for i in range(n):
             ys = baselines[i] - rows[i] * scale
             d = points_to_path(xs, ys, close_to=baselines[i] + 0.01)
@@ -108,18 +128,25 @@ def build(args):
         # Year labels every decade.
         for i, y in enumerate(years):
             if y % 10 == 0 or i in (0, n - 1):
+                lay("text")
                 svg.text(px0 - 4, baselines[i] + 0.6, str(y), size=1.8, fill=ink, anchor="end")
+                lay("flags")
                 svg.line(px0 - 2.5, baselines[i], px0 - 0.5, baselines[i], stroke=ink, stroke_width=0.08)
 
         # Phase axis: weekly ticks reveal how the calendar is stretched.
         ay = bottom + 10
+        lay("axis")
         svg.line(px0, ay, px1, ay, stroke=ink, stroke_width=0.15)
+        lay("ticks")
         for k in range(0, 365, 7):
             svg.line(axis.x(k), ay, axis.x(k), ay + 1.2, stroke=ink, stroke_width=0.06)
         for name, xs0, xs1, d0 in axis.boundaries():
+            lay("ticks")
             svg.line(xs0, ay, xs0, ay + 4, stroke=ink, stroke_width=0.12)
+            lay("text")
             svg.text(xs0 + 1.0, ay + 4.2, name, size=1.9, fill=ink, spacing=0.25)
             svg.text(xs0 + 1.0, ay + 7.0, seasons.day_label(d0), size=1.6, fill=ink, opacity=0.7)
+        lay("text")
         svg.text(px1, ay + 13, "1 TICK = 7 DAYS", size=1.6, fill=ink, anchor="end", opacity=0.7)
 
         # Flags on the largest crests (leader to the right margin).
@@ -128,19 +155,24 @@ def build(args):
             x, y = xs[k], baselines[i] - rows[i][k] * scale
             peak_val = rows[i][k] + (floor if args.param == "level" else 0)
             label = f"{years[i]} · {peak_val:,.{decimals}f} {units} · {seasons.day_label(k)}"
+            lay("flags")
             svg.circle(x, y, 0.45, fill=ink)
             flag(svg, x, y, label, dx=px1 - x + 6, color=ink, size=1.8)
+            lay("text")
 
         # Vertical scale for the line height.
         unit_step = _nice(vmax / 3)
         sx, sy = px1 + 8, bottom
         h = unit_step * scale
+        lay("axis")
         svg.line(sx, sy, sx, sy - h, stroke=ink, stroke_width=0.15)
         svg.line(sx - 1, sy, sx + 1, sy, stroke=ink, stroke_width=0.15)
         svg.line(sx - 1, sy - h, sx + 1, sy - h, stroke=ink, stroke_width=0.15)
+        lay("text")
         svg.text(sx + 2, sy - h / 2, f"{unit_step:,.{decimals}f} {units}", size=1.8, fill=ink)
 
         # Title block.
+        lay("text")
         tx, ty = m + 10, frame_y0 + 14
         svg.text(tx, ty, "RED RIVER AT LOCKPORT", size=5.2, fill=ink, spacing=0.4)
         svg.text(tx, ty + 7, "HYDROGRAPH SURFACE — "
@@ -168,6 +200,7 @@ def build(args):
 
     draw(INK_LIGHT, INK_DARK, svg.clip_rect(0, 0, flip_x, H))
     draw(INK_DARK, "#ffffff", svg.clip_rect(flip_x, 0, W - flip_x, H))
+    svg.layer(L["frame"])
     svg.rect(m, frame_y0, W - 2 * m, frame_y1 - frame_y0, fill="none", stroke=INK_DARK, stroke_width=0.15)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)

@@ -1,4 +1,5 @@
 import math
+import re
 from xml.sax.saxutils import escape
 
 
@@ -56,16 +57,29 @@ def points_to_path(xs, ys, close_to=None):
 
 
 class Svg:
-    """Minimal SVG writer working in millimetres."""
+    """Minimal SVG writer working in millimetres.
+
+    Drawing goes into named layers (see layer()), written as top-level groups
+    that Illustrator and Inkscape open as layers, in the order first used.
+    """
 
     def __init__(self, width, height, background="#ffffff"):
         self.w = width
         self.h = height
         self.defs = []
-        self.body = []
+        self._base = []
+        self._layers = {}
+        self.body = self._base
         self._ids = 0
         if background:
+            self.layer("PAPER")
             self.rect(0, 0, width, height, fill=background)
+            self.layer(None)
+
+    def layer(self, name):
+        """Send what follows to the named layer (None: outside any layer).
+        Returning to a layer appends to it; its stacking stays where it began."""
+        self.body = self._base if name is None else self._layers.setdefault(name, [])
 
     def uid(self, prefix="id"):
         self._ids += 1
@@ -117,14 +131,27 @@ class Svg:
 
     def save(self, path):
         head = (
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(self.w)}mm" '
-            f'height="{_fmt(self.h)}mm" viewBox="0 0 {_fmt(self.w)} {_fmt(self.h)}">'
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            f'width="{_fmt(self.w)}mm" height="{_fmt(self.h)}mm" '
+            f'viewBox="0 0 {_fmt(self.w)} {_fmt(self.h)}">'
         )
         with open(path, "w", encoding="utf-8") as f:
             f.write(head)
             if self.defs:
                 f.write("<defs>" + "".join(self.defs) + "</defs>")
-            f.write("\n".join(self.body))
+            f.write("\n".join(self._base))
+            used = set()
+            for name, items in self._layers.items():
+                if not items:
+                    continue
+                lid = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "layer"
+                while lid in used:
+                    lid += "_"
+                used.add(lid)
+                f.write(f'\n<g id="{lid}" inkscape:groupmode="layer" inkscape:label="{escape(name)}">\n')
+                f.write("\n".join(items))
+                f.write("\n</g>")
             f.write("</svg>\n")
 
 
@@ -152,11 +179,16 @@ def north_arrow(svg, cx, cy, r=3.0, color="#000", angle=0.0):
     svg.close_group()
 
 
-def flag(svg, x, y, label, dx=12.0, color="#000", size=1.9, side=1):
-    """Leader line from a data point to a small text flag (as on p.238)."""
+def flag(svg, x, y, label, dx=12.0, color="#000", size=1.9, side=1, line_layer=None, text_layer=None):
+    """Leader line from a data point to a small text flag (as on p.238).
+    Optionally puts the line and the text on named layers."""
     ex = x + dx * side
+    if line_layer:
+        svg.layer(line_layer)
     svg.line(x, y, ex, y, stroke=color, stroke_width=0.08)
     svg.path(f"M{_fmt(ex)},{_fmt(y - 1.2)} L{_fmt(ex + 1.6 * side)},{_fmt(y)} L{_fmt(ex)},{_fmt(y + 1.2)}",
              fill="none", stroke=color, stroke_width=0.08)
+    if text_layer:
+        svg.layer(text_layer)
     svg.text(ex + 2.4 * side, y + size * 0.35, label, size=size, fill=color,
              anchor="start" if side > 0 else "end")
