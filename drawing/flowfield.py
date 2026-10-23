@@ -138,12 +138,13 @@ def trace(u, v, domain, seed, step=0.5, max_steps=20000, min_speed=0.003):
     return np.array(rows), np.array(cols), np.array(times)
 
 
-def stream_lines(u, v, fn, domain, per_line, cell, edge=2):
+def stream_lines(u, v, fn, domain, per_line, cell, edge=2, levels=None):
     """Streamlines as contours of the stream function: psi is the discharge
     (m3/s) crossing each row of north faces west of a point, summed from the
     exact face discharges fn (see solve), so it is conserved from row to row;
     lines at every per_line carry equal flow and cannot merge. `edge` rows at
     the inflow and outflow edges, where the flow is held fixed, are left out.
+    `levels` (m3/s) picks the lines to draw, e.g. one stream tube's band.
 
     Returns [(rows, cols, seconds)] in cell units along each line, oriented
     downstream, with cumulative travel time from its upstream end.
@@ -157,8 +158,9 @@ def stream_lines(u, v, fn, domain, per_line, cell, edge=2):
     psi = np.where(face, psi, np.nan)
     psi[:edge + 1] = np.nan
     psi[-edge:] = np.nan
-    total = np.nanpercentile(psi[np.isfinite(psi)], 99.5)
-    levels = np.arange(per_line / 2, total, per_line)
+    if levels is None:
+        total = np.nanpercentile(psi[np.isfinite(psi)], 99.5)
+        levels = np.arange(per_line / 2, total, per_line)
     gen = contourpy.contour_generator(z=psi, name="serial")
     speed = np.hypot(u, v)
     out = []

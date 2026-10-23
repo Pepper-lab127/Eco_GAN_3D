@@ -253,7 +253,8 @@ def build(args):
     s = 1000.0 / args.scale
     pw, ph = W * st * s, H * st * s
     gap = 24.0
-    x_plans = [m + 30, m + 30 + pw + gap]
+    x_left = (Wp - (2 * pw + gap)) / 2                     # the pair of plans centred on the sheet
+    x_plans = [x_left, x_left + pw + gap]
     y0 = m + 62
     svg = Svg(Wp, Hp)
     L = dict(frame="FRAME · 0.15 mm", frame_plans="PLAN FRAMES · 0.08 mm",
@@ -281,26 +282,26 @@ def build(args):
         svg.text(x0 + pw, y0 + ph + 4, f"SPEED: MEDIAN {np.median(sp):.2f} M/S · FASTEST 1% {np.percentile(sp, 99):.2f} M/S",
                  size=1.8, fill=INK, anchor="end")
 
-    # Details: the dam and the floodway outlet, each day, enlarged.
+    # Details: the dam and the floodway outlet, enlarged, each pair centred
+    # under its own day's plan.
     dy0 = y0 + ph + 30
-    dx = m + 30
     det_w = (args.detail_dam[3] - args.detail_dam[2]) * 1000.0 / args.detail_scale
-    dgap = (Wp - 2 * m - 30 - 12 - 4 * det_w) / 3
     svg.layer(L["text"])
-    svg.text(dx, dy0 - 8, f"DETAILS · 1:{args.detail_scale:,} · ARROWHEADS EVERY {args.detail_chevron_s:g} S OF TRAVEL",
+    svg.text(x_plans[0], dy0 - 8, f"DETAILS · 1:{args.detail_scale:,} · ARROWHEADS EVERY {args.detail_chevron_s:g} S OF TRAVEL",
              size=2.2, fill=INK, spacing=0.25)
-    k = 0
-    for place, (ra, rb, ca, cb) in (("DAM AND LOCK", args.detail_dam), ("FLOODWAY OUTLET", args.detail_outlet)):
-        for day in days:
-            px0 = dx + k * (det_w + dgap)
+    for i, (xp, day) in enumerate(zip(x_plans, days)):
+        dgap = pw - 2 * det_w
+        for j, (place, (ra, rb, ca, cb)) in enumerate((("DAM AND LOCK", args.detail_dam),
+                                                         ("FLOODWAY OUTLET", args.detail_outlet))):
+            px0 = xp + j * (det_w + dgap)
             every_det = max(1, int(round(len(day["lines"]) / 60)))
             _, dph = draw_plan(day, px0, dy0, (ra, rb), (ca, cb), args.detail_scale, args.detail_chevron_s,
-                               every_det, title=f"{place} · {day['date'].strftime('%b %d, %Y').upper()}", bar=(k == 0))
+                               every_det, title=f"{place} · {day['date'].strftime('%b %d, %Y').upper()}",
+                               bar=(i == 0 and j == 0))
             if place == "FLOODWAY OUTLET" and not day["q_fw"]:
                 svg.layer(L["text"])
                 svg.text(px0 + det_w / 2, dy0 + dph / 2, "FLOODWAY CLOSED · NO FLOW", size=2.0, fill=INK,
                          anchor="middle", spacing=0.3, opacity=0.7)
-            k += 1
 
     # Legend, top right.
     lx, ly = Wp - m - 200, m + 12

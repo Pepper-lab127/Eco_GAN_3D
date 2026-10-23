@@ -27,6 +27,7 @@ spreads only through connected ground below each level.
 """
 
 import argparse
+import math
 import datetime as dt
 import os
 
@@ -34,12 +35,13 @@ import contourpy
 import numpy as np
 from scipy import ndimage
 
-from drawing import hydrometric, terrain
+from drawing import flowfield, hydrometric, terrain
 from drawing.svg import PAPER, Svg, north_arrow, points_to_path, scale_bar
 from sheets.calendar_cut import true_north_angle
 
 
 INK = "#111111"
+FW_INK = "#8a8a8a"
 
 
 def daily(path, param, start, end, required=True):
@@ -88,10 +90,33 @@ def build(args):
     flow, flow_filled = daily(args.flow_csv, "discharge", start, end)
     days = sorted(flow)
     peak_day = max(days, key=flow.get)
-    fw_flow = {}
+    fw_flow, fw_est = {}, None
     if args.floodway_flow:
         fw_flow, _ = daily(args.floodway_flow, "discharge", start, end)
         fw_flow = {d: max(0.0, min(v, flow[d])) for d, v in fw_flow.items()}
+    elif args.floodway_record and args.floodway_peak:
+        # No floodway record for these days: estimate each day's share from how
+        # the floodway ran against Lockport's flow in its record (spring days,
+        # share = k (Q - Q0) above Q0), then scale to the published peak.
+        dr, qr, _ = hydrometric.load_wsc_daily(args.floodway_record, "discharge")
+        rec = {d: v for d, v in zip(dr, qr) if v == v}
+        dl, ql, _ = hydrometric.load_wsc_daily(args.flow_csv, "discharge")
+        lk = {d: v for d, v in zip(dl, ql) if v == v}
+        pairs = np.array([(lk[d], rec[d]) for d in rec if d in lk and d.month in (3, 4, 5, 6)])
+        best = None
+        for q0 in np.arange(600, 1600, 25):
+            x = np.clip(pairs[:, 0] - q0, 0, None)
+            k_ = float((x @ pairs[:, 1]) / max(x @ x, 1e-9))
+            err = float(np.sum((k_ * x - pairs[:, 1]) ** 2))
+            if best is None or err < best[0]:
+                best = (err, q0, k_)
+        _, q0, k_ = best
+        raw = {d: k_ * max(0.0, flow[d] - q0) for d in days}
+        f = args.floodway_peak / max(max(raw.values()), 1e-9)
+        fw_flow = {d: min(v * f, flow[d]) for d, v in raw.items()}
+        rmse = math.sqrt(best[0] / len(pairs))
+        fw_est = dict(q0=q0, k=k_, scale=f, n=len(pairs), rmse=rmse, years=f"{min(rec).year}–{max(rec).year}",
+                      fit_peak=max(raw.values()))
 
     # Above the dam: recorded if the gauge covers the period, otherwise
     # estimated from James Avenue through their spring open-water relation.
@@ -145,6 +170,77 @@ def build(args):
         xs_all.append(cols + rng.random(n))
         ys_all.append(rows + rng.random(n))
 
+    # The floodway's water, from its channel through the outlet into the Red:
+    # streamlines of a conveyance solve (as sheet 01) on its peak day, the
+    # channel filled to an assumed depth over its bed. Each day's floodway dots
+    # are laid along these paths, by travel time (slow water holds more dots).
+    fw_lines, fw_pts = [], None
+    fw_band = np.zeros(a.shape, bool)
+    if fw_flow and max(fw_flow.values()) > 0:
+        fw_day = max(fw_flow, key=fw_flow.get)
+        st = args.cell
+        ac = a[::st, ::st]
+        chc = channel[::st, ::st]
+        corridor = ndimage.binary_dilation(chc, iterations=args.floodway_reach // st)
+        fw_level = fw_bed + args.floodway_depth
+        sd = (fw_seed[0] // st, fw_seed[1] // st)
+        bar_c = barrier[::st, ::st]
+        fw_wet = terrain.flood(np.where(corridor & ~bar_c, ac, np.inf), fw_level, sd)
+        dn_wet = terrain.flood(floodable, level_dn[fw_day], water_down)[::st, ::st]
+        bridge = (ndimage.binary_dilation(fw_wet, iterations=args.outlet_reach // st)
+                  & ndimage.binary_dilation(dn_wet, iterations=args.outlet_reach // st)
+                  & (ac < max(level_dn[fw_day], fw_level) + 3))
+        lab, _ = ndimage.label(fw_wet | dn_wet | bridge)
+        dom = lab == lab[sd]
+        inflow = np.zeros_like(dom)
+        inflow[-1] = dom[-1] & fw_wet[-1]
+        outflow = np.zeros_like(dom)
+        outflow[0] = dom[0]
+        bed_c = bed[::st, ::st]
+        lvl = np.where(fw_wet | bridge, fw_level, level_dn[fw_day])
+        dep = np.where(np.isfinite(bed_c) & ~(fw_wet | bridge), lvl - bed_c, lvl - ac)
+        dep = np.clip(np.nan_to_num(dep, nan=0.3), 0.3, None)
+        uf, vf, fnf = flowfield.solve(dom, dep, inflow, outflow, fw_flow[fw_day], st)
+        # The river's own flow through the dam, solved alike, so the floodway's
+        # water keeps to its own band of the Red below the outlet (west of it
+        # in the stream function lies the river's water, east the floodway's).
+        q_r = flow[fw_day] - fw_flow[fw_day]
+        up_lv = level_up[fw_day] if level_up[fw_day] is not None else args.water_below
+        up_wet = terrain.flood(floodable, up_lv, water_up)[::st, ::st]
+        cross = bar_c & ndimage.binary_dilation(up_wet, iterations=3) & ndimage.binary_dilation(dn_wet, iterations=3)
+        lab_r, _ = ndimage.label(up_wet | dn_wet | cross)
+        big = np.bincount(lab_r.ravel())[1:].argmax() + 1
+        dom_r = lab_r == big
+        in_r = np.zeros_like(dom_r)
+        in_r[-1] = dom_r[-1] & ~fw_wet[-1]
+        out_r = np.zeros_like(dom_r)
+        out_r[0] = dom_r[0]
+        lvl_r = np.where(up_wet, up_lv, level_dn[fw_day])
+        dep_r = np.where(np.isfinite(bed_c), lvl_r - bed_c, lvl_r - ac)
+        dep_r = np.clip(np.nan_to_num(dep_r, nan=0.3), 0.3, None)
+        dep_r = np.where(bar_c, ndimage.maximum_filter(np.where(bar_c, 0, dep_r), size=7), dep_r)
+        ur, vr, fnr = flowfield.solve(dom_r, dep_r, in_r, out_r, q_r, st)
+        per = fw_flow[fw_day] / args.fw_lines
+        # The floodway's band of the Red: between the river's discharge and the
+        # total in the stream function; the river's dots stay out of it.
+        psi = np.cumsum(fnr + fnf, axis=1)
+        band_c = (dom | dom_r) & (psi > q_r + per * 0.25) & ~fw_wet & ~bridge
+        band_c = ndimage.binary_opening(band_c, iterations=1)
+        fw_band = np.repeat(np.repeat(band_c, st, 0), st, 1)[:H, :W]
+        fw_band = np.pad(fw_band, ((0, H - fw_band.shape[0]), (0, W - fw_band.shape[1])))
+        lines = flowfield.stream_lines(ur + uf, vr + vf, fnr + fnf, dom | dom_r, per, st,
+                                       levels=np.arange(q_r + per / 2, q_r + fw_flow[fw_day], per))
+        fw_lines = [(rr * st, cc * st, tt * st) for rr, cc, tt in lines if len(rr) > 10]
+        pts, wts = [], []
+        for rr, cc, tt in fw_lines:
+            dtt = np.diff(tt, prepend=tt[0])
+            pts.append(np.stack([rr, cc], 1))
+            wts.append(np.clip(dtt, 0, np.percentile(dtt, 99) if len(dtt) > 3 else None))
+        fw_pts = np.concatenate(pts)
+        fw_w = np.concatenate(wts)
+        fw_w = fw_w / fw_w.sum()
+    fx_all, fy_all = [], []
+
     for d in days:
         wet = water_up | water_down
         lvl = np.full(a.shape, np.nan)
@@ -157,17 +253,26 @@ def build(args):
             if d in (start, r["crest"]) and level is not None:
                 edges[(r["name"], d)] = r_wet
         dist = ndimage.distance_transform_edt(wet)         # metres to the nearest dry ground
-        weight = np.where(wet & ~barrier, np.exp(-dist / args.front), 0.0).ravel()
         fw = fw_flow.get(d, 0.0)
+        keep = ~barrier & ~(fw_band if fw > 0 else False)
+        weight = np.where(wet & keep, np.exp(-dist / args.front), 0.0).ravel()
         n_river = int(round((flow[d] - fw) * 86400 / args.volume))
         depth = np.where(np.isfinite(bed), lvl - bed, lvl - a)
-        conv = np.where(wet & ~barrier & ~channel & np.isfinite(depth), np.clip(depth, 0, None) ** (5 / 3), 0.0).ravel()
+        conv = np.where(wet & keep & ~channel & np.isfinite(depth), np.clip(depth, 0, None) ** (5 / 3), 0.0).ravel()
         n_edge = int(round(n_river * args.edge_share)) if conv.sum() > 0 else n_river
         scatter(weight, n_edge)
         scatter(conv, n_river - n_edge)
-        # The floodway's share, spread along its bed: its edge was not recorded.
-        scatter(channel_weight, int(round(fw * 86400 / args.volume)))
+        # The floodway's share: along its flow paths if solved, else along its bed.
+        n_fw = int(round(fw * 86400 / args.volume))
+        if fw_pts is not None and n_fw > 0:
+            k = rng.choice(len(fw_pts), size=n_fw, p=fw_w)
+            fy_all.append(fw_pts[k, 0] + rng.normal(0, args.fw_spread, n_fw))
+            fx_all.append(fw_pts[k, 1] + rng.normal(0, args.fw_spread, n_fw))
+        else:
+            scatter(channel_weight, n_fw)
     xs_all, ys_all = np.concatenate(xs_all), np.concatenate(ys_all)
+    fx_all = np.concatenate(fx_all) if fx_all else np.zeros(0)
+    fy_all = np.concatenate(fy_all) if fy_all else np.zeros(0)
 
     # Layout.
     Wp, Hp = PAPER[args.paper]
@@ -191,6 +296,9 @@ def build(args):
         riverbed=f"PLAN · RIVERBED CONTOURS 1 M (CHART), DASHED · {mm(0.035)}",
         bed=f"PLAN · FLOODWAY BED, DOTTED · {mm(0.1)}",
         dots=f"PLAN · DOTS · {mm(args.dot)}",
+        fwdots=f"PLAN · FLOODWAY WATER DOTS, GREY · {mm(args.dot)}",
+        fwlines=f"PLAN · FLOODWAY FLOW PATHS · {mm(0.05)}",
+        fwheads=f"PLAN · FLOODWAY ARROWHEADS, EQUAL TRAVEL TIME · {mm(0.08)}",
         first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
         crest=f"PLAN · CREST EDGES · {mm(0.12)}",
         dam=f"PLAN · DAM AND LOCK · {mm(0.35)}",
@@ -249,6 +357,39 @@ def build(args):
     svg.path(d, fill="none", stroke=INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.85)
     svg.close_group()
 
+    # The floodway's water: grey dots along its flow paths, the paths faint,
+    # with arrowheads every few minutes of travel into and down the Red.
+    if len(fx_all):
+        plan("fwdots")
+        d = "".join(f"M{x0 + x * s:.2f},{y0 + y * s:.2f}h0" for x, y in zip(fx_all, fy_all))
+        svg.path(d, fill="none", stroke=FW_INK, stroke_width=args.dot, stroke_linecap="round", opacity=0.9)
+        svg.close_group()
+        plan("fwlines")
+        svg.path(" ".join(points_to_path(x0 + (cc + 0.5) * s, y0 + (rr + 0.5) * s) for rr, cc, _ in fw_lines),
+                 fill="none", stroke=INK, stroke_width=0.05, opacity=0.6)
+        svg.close_group()
+        heads = []
+        sz = 0.9
+        for j, (rr, cc, tt) in enumerate(fw_lines):
+            if j % 3:
+                continue
+            for t_mark in np.arange(args.fw_chevron_s * (0.5 + (j * 0.37) % 1), tt[-1], args.fw_chevron_s):
+                i = int(np.searchsorted(tt, t_mark))
+                if i < 1 or i >= len(tt):
+                    continue
+                px, py = x0 + (cc[i] + 0.5) * s, y0 + (rr[i] + 0.5) * s
+                ddx, ddy = cc[i] - cc[i - 1], rr[i] - rr[i - 1]
+                n_ = math.hypot(ddx, ddy)
+                if n_ == 0:
+                    continue
+                ddx, ddy = ddx / n_, ddy / n_
+                heads.append(f"M{px - sz * (ddx - 0.55 * ddy):.2f},{py - sz * (ddy + 0.55 * ddx):.2f}L{px:.2f},{py:.2f}"
+                             f"L{px - sz * (ddx + 0.55 * ddy):.2f},{py - sz * (ddy - 0.55 * ddx):.2f}")
+        plan("fwheads")
+        svg.path(" ".join(heads), fill="none", stroke=INK, stroke_width=0.08, stroke_linejoin="round",
+                 stroke_linecap="round", opacity=0.8)
+        svg.close_group()
+
     # Hairlines: each reach's first and highest edges.
     near_dam = ndimage.binary_dilation(barrier, iterations=2)
     for (name, d), wet in edges.items():
@@ -290,7 +431,8 @@ def build(args):
     svg.text(tx, y0 - 3, f"STATION {hydrometric.station_id(args.flow_csv)} · ONE TICK PER DAY",
              size=2.0, fill=INK, opacity=0.75)
     if fw_flow:
-        svg.text(tx, y0 + ph + 16, f"HEAVY: THE FLOODWAY'S SHARE ({hydrometric.station_id(args.floodway_flow)})",
+        svg.text(tx, y0 + ph + 16, "HEAVY: THE FLOODWAY'S SHARE " + (f"({hydrometric.station_id(args.floodway_flow)})"
+                 if args.floodway_flow else "(ESTIMATED)"),
                  size=2.0, fill=INK, opacity=0.85)
     svg.layer(L["axis"])
     svg.line(tx, y0, tx, y0 + ph, stroke=INK, stroke_width=tw * 1.6)
@@ -310,8 +452,8 @@ def build(args):
             svg.line(tx - 1.5, y, tx, y, stroke=INK, stroke_width=tw)
         svg.layer(L["text"])
         if d == fw_peak:
-            svg.text(tx + flow[d] / qmax * tick_max + 2.5, y + 0.8,
-                     f"FLOODWAY {fw_flow[d]:,.0f} m³/s", size=2.0, fill=INK, opacity=0.85)
+            svg.text(tx + flow[d] / qmax * tick_max + 2.5, y + 0.8 + (3.0 if d == peak_day else 0),
+                     f"FLOODWAY {fw_flow[d]:,.0f} m³/s" + (" (EST.)" if fw_est else ""), size=2.0, fill=INK, opacity=0.85)
         if d.weekday() == 0 or d in (start, end):
             svg.text(tx - 2.5, y + 0.8, d.strftime("%b %d").upper(), size=2.0, fill=INK, anchor="end")
         if d == peak_day:
@@ -342,6 +484,24 @@ def build(args):
              size=2.4, fill=INK, spacing=0.3)
     side = round(args.volume ** (1 / 3))
     crest_dn = reaches[1]["crest"]
+    if not fw_flow:
+        fw_note = [f"Floodway (dotted outline: its channel bed): it carried water in {start.year}, but no floodway record for "
+                   "that year is on file (station 05OJ014 reported flow only, 1969–1976), so this sheet cannot place it."]
+    else:
+        if args.floodway_flow:
+            fw_note = (f"Floodway: daily flow MEASURED at {hydrometric.station_id(args.floodway_flow)} (peak "
+                       f"{fw_flow[fw_peak]:,.0f} m³/s on {fw_peak.strftime('%b %d')}).")
+        else:
+            fw_note = (f"Floodway: daily flow ESTIMATED. No record for {start.year} is on file; in "
+                       f"{hydrometric.station_id(args.floodway_record)}'s {fw_est['years']} spring record ({fw_est['n']} days) "
+                       f"the floodway took {fw_est['k']:.2f} of Lockport's flow above {fw_est['q0']:,.0f} m³/s "
+                       f"(±{fw_est['rmse']:.0f} m³/s); that gives a {fw_est['fit_peak']:,.0f} m³/s peak, scaled "
+                       f"×{fw_est['scale']:.2f} to the published {args.floodway_peak:,.0f} m³/s, on {fw_peak.strftime('%b %d')}.")
+        fw_note = [fw_note, ("Grey dots: each day's floodway share, laid along its flow paths (fine lines, arrowheads every "
+                    f"{args.fw_chevron_s / 60:g} min of travel) from the channel through the outlet into the Red, solved by "
+                    f"conveyance on its peak day with the channel {args.floodway_depth:g} m deep over its bed (assumed); "
+                    "the river gets the rest." if fw_lines else
+                    "Its share is spread along its bed (dotted outline), since its water's edge was not recorded.")]
     notes = [
         f"Each day the water that passed Lockport is drawn as dots, one per {args.volume:,.0f} m³ (a cube about {side} m on a side): "
         f"{n:,} dots for {len(days)} days.",
@@ -361,17 +521,12 @@ def build(args):
         f"crest {level_dn[crest_dn]:.2f} m on {crest_dn.strftime('%b %d')}.",
         (f"{len(beyond)} days exceeded the fitted range, up to {qmax:,.0f} m³/s: their levels below the dam are extrapolated."
          if beyond else "All days lie within the fitted range."),
-        (f"Floodway: daily flow MEASURED at {hydrometric.station_id(args.floodway_flow)} (peak {fw_flow[fw_peak]:,.0f} m³/s on "
-         f"{fw_peak.strftime('%b %d')}). Its share of each day's dots is spread along its bed (dotted outline), since its water's edge "
-         "was not recorded; the river gets the rest."
-         if fw_flow else
-         f"Floodway (dotted outline: its channel bed): it carried water in {start.year}, but no floodway record for that year is on file "
-         "(station 05OJ014 reported flow only, 1969–1976), so this sheet cannot place it."),
+        *fw_note,
         "Faint lines: ground contours every metre. Heavy bar: the dam and lock, which no flood crosses here.",
         "SOURCES: Water Survey of Canada stations "
         + ", ".join(hydrometric.station_id(p) for p in
                     [args.level_csv, args.flow_csv] + ([args.james_csv] if up_est else [])
-                    + ([args.floodway_flow] if fw_flow else []))
+                    + ([args.floodway_flow or args.floodway_record] if fw_flow else []))
         + "; NRCan HRDEM lidar DTM. Levels applied without datum adjustment; the lidar cannot see under water.",
     ]
     for j, note in enumerate(notes):
@@ -407,6 +562,18 @@ def main():
                     help="DEM cell inside the floodway channel bed")
     ap.add_argument("--floodway-bed", type=float, default=1.5,
                     help="m above the channel's lowest point counted as its bed")
+    ap.add_argument("--floodway-record", default="data/lockport/daily_05OJ014.csv",
+                    help="floodway flow record used to estimate the share when --floodway-flow is not given")
+    ap.add_argument("--floodway-peak", type=float, default=1800.0,
+                    help="published floodway peak (m³/s) the estimate is scaled to; 0 for none")
+    ap.add_argument("--floodway-depth", type=float, default=7.0, help="m of water assumed over the floodway bed (as sheet 01)")
+    ap.add_argument("--floodway-reach", type=int, default=90, help="m either side of the bed the floodway may fill")
+    ap.add_argument("--cell", type=int, default=3, help="m per cell for the floodway flow solve")
+    ap.add_argument("--outlet-reach", type=int, default=45,
+                    help="m across the outlet structure joined to let the floodway's water reach the river")
+    ap.add_argument("--fw-lines", type=int, default=40, help="floodway flow paths drawn")
+    ap.add_argument("--fw-spread", type=float, default=6.0, help="m the floodway dots scatter about their paths")
+    ap.add_argument("--fw-chevron-s", type=float, default=240.0, help="seconds of travel between floodway arrowheads")
     ap.add_argument("--start", default="1997-04-01")
     ap.add_argument("--end", default="1997-06-30")
     ap.add_argument("--volume", type=float, default=100_000, help="m³ of water per dot")
