@@ -1,0 +1,6 @@
+# Site drawings (drawing/, sheets/, tools/)
+numpy
+pillow
+rasterio
+scipy
+contourpy

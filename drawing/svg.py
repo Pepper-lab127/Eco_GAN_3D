@@ -97,6 +97,11 @@ class Svg:
         if d:
             self.body.append(f"<path {_attrs(d=d, **kw)}/>")
 
+    def image(self, x, y, w, h, href, **kw):
+        self.body.append(
+            f'<image {_attrs(x=x, y=y, width=w, height=h, preserveAspectRatio="none", **kw)} href="{href}"/>'
+        )
+
     def circle(self, cx, cy, r, **kw):
         self.body.append(f"<circle {_attrs(cx=cx, cy=cy, r=r, **kw)}/>")
 
@@ -136,10 +141,13 @@ def scale_bar(svg, x, y, length_mm, label_end, units, color="#000", segments=4):
     svg.text(x + length_mm, y + 3.2, f"{label_end} {units}", size=1.8, fill=color, anchor="middle")
 
 
-def north_arrow(svg, cx, cy, r=3.0, color="#000"):
+def north_arrow(svg, cx, cy, r=3.0, color="#000", angle=0.0):
+    """angle: true north in degrees clockwise from the top of the sheet."""
     svg.circle(cx, cy, r, fill="none", stroke=color, stroke_width=0.15)
+    svg.open_group(transform=f"rotate({_fmt(angle)} {_fmt(cx)} {_fmt(cy)})")
     svg.line(cx, cy + r, cx, cy - r, stroke=color, stroke_width=0.15)
     svg.text(cx, cy - r - 0.8, "N", size=1.8, fill=color, anchor="middle")
+    svg.close_group()
 
 
 def flag(svg, x, y, label, dx=12.0, color="#000", size=1.9, side=1):

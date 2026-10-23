@@ -100,6 +100,12 @@ Sheets are SVG at true paper size (mm) for finishing in Illustrator/Inkscape.
 - `sheets/` – one script per sheet.
 - `data/lockport/` – where downloaded data goes (see its README).
 
+Install: `pip install -r requirements-drawing.txt`
+
+Sheet 02, calendar cut (1 m lidar terrain flooded with monthly gauge levels):
+
+python -m sheets.calendar_cut
+
 Sheet 03, hydrograph surface:
 
 python -m sheets.hydrograph_surface --csv data/lockport/daily.csv

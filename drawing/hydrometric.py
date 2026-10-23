@@ -153,3 +153,26 @@ def median_ice_dates(dates, syms):
     breakup = int(np.median(list(spring.values()))) if spring else None
     freezeup = int(np.median(list(autumn.values()))) if autumn else None
     return breakup, freezeup
+
+
+def monthly_levels(dates, values, min_days=10):
+    """Per calendar month: each year's max and min, plus all-day median.
+
+    Only years with at least min_days recorded in that month count.
+    Returns {month: {"max": {year: v}, "min": {year: v}, "median": v}}.
+    """
+    groups = {}
+    for d, v in zip(dates, values):
+        if v == v:
+            groups.setdefault(d.month, {}).setdefault(d.year, []).append(v)
+    out = {}
+    for month, years in groups.items():
+        years = {y: vs for y, vs in years.items() if len(vs) >= min_days}
+        if not years:
+            continue
+        out[month] = {
+            "max": {y: max(vs) for y, vs in years.items()},
+            "min": {y: min(vs) for y, vs in years.items()},
+            "median": float(np.median([v for vs in years.values() for v in vs])),
+        }
+    return out
