@@ -24,7 +24,7 @@ import os
 
 import numpy as np
 
-from drawing import climate, geology, hydrometric, terrain
+from drawing import climate, fish, geology, hydrometric, terrain
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile, water_edges
 from drawing.svg import PAPER, Svg, scale_bar
@@ -79,6 +79,7 @@ def build(args):
              column="WATER COLUMN, FADING · 0.06 mm", bed="RIVERBED FROM CHART, DASHED · 0.2 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
              ice="ICE · EACH WINTER'S THICKEST · 0.1 mm", ground="GROUND (LIDAR) · 0.25 mm",
              margin="MARGIN · ICE TICKS · 0.15 mm", detail="DETAIL · ICE GROWTH LINES · 0.05–0.12 mm",
+             fish="FISH · OUTLINES (DIAGRAM) · 0.06 mm", fish_strip="FISH · SPECIES STRIP · 0.08 mm",
              key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BARS", text="TEXT")
     for name in L.values():
@@ -160,6 +161,61 @@ def build(args):
     svg.layer(L["ground"])
     svg.path(sec.path(ch, np.where(in_channel, np.nan, ground)), fill="none", stroke=INK,
              stroke_width=0.25, stroke_linejoin="round")
+
+    # Fish: the six species overwintering in the water column, placed by habit
+    # in the deepest water (DIAGRAM, enlarged to 1:fish_scale).
+    rng_f = np.random.default_rng(args.seed_fish)
+    fs = 1000.0 / args.fish_scale
+    a_, b_ = water_edges(for_edges, lidar_water, mid)
+    under_ice = lidar_water - coldest["ice"][coldest["peak"]]
+    cols_w = np.arange(a_ + 3, b_ - 3)
+    beds = np.where(np.isfinite(bed[cols_w]), bed[cols_w], lidar_water - 2.0)
+    depth_c = under_ice - beds
+    order = np.argsort(-depth_c)
+    svg.layer(L["fish"])
+    placed = []
+    for k, sp in enumerate(fish.SPECIES):
+        for j in range(args.fish_each):
+            for _ in range(200):
+                c = int(cols_w[order[rng_f.integers(0, max(1, len(order) * (2 + j) // 5))]])
+                dep = under_ice - (bed[c] if np.isfinite(bed[c]) else lidar_water - 2.0)
+                z = (bed[c] if np.isfinite(bed[c]) else lidar_water - 2.0) + dep * rng_f.uniform(*sp["zone"])
+                fx, fy = float(sec.X(c)), float(sec.Y(z))
+                Lmm = sp["length"] * fs * rng_f.uniform(0.85, 1.1)
+                facing = 1 if rng_f.random() < 0.5 else -1
+                box = (min(fx, fx - facing * Lmm), max(fx, fx - facing * Lmm), fy - Lmm * sp["depth"], fy + Lmm * sp["depth"])
+                if box[3] > sec.Y(bed[c] if np.isfinite(bed[c]) else lidar_water - 2.0) or box[2] < sec.Y(under_ice):
+                    continue
+                if any(not (box[1] < q[0] - 1 or box[0] > q[1] + 1 or box[3] < q[2] or box[2] > q[3]) for q in placed):
+                    continue
+                placed.append(box)
+                svg.path(" ".join(fish.outline(fx, fy, Lmm, sp["depth"], facing, sp["tail"], sp.get("spiny", False),
+                                               sp.get("barbels", False), sp.get("scutes", False))),
+                         fill=GROUND, stroke=INK, stroke_width=0.06, stroke_linejoin="round")
+                break
+
+    # Species strip: each fish at 1:fish_strip_scale, name, length, habit, status.
+    fx0 = sec.x0 + 425
+    fy0 = sec.Y(args.z_bottom) + 34
+    svg.layer(L["text"])
+    svg.text(fx0, fy0 - 6, f"FISH OF THE RED RIVER AT LOCKPORT · SIX SPECIES · 1:{args.fish_strip_scale}",
+             size=2.2, fill=INK, spacing=0.25)
+    fss = 1000.0 / args.fish_strip_scale
+    for k, sp in enumerate(fish.SPECIES):
+        col, rowk = k % 2, k // 2
+        x = fx0 + col * 120 + sp["length"] * fss + 2
+        y = fy0 + 8 + rowk * 22
+        svg.layer(L["fish_strip"])
+        svg.path(" ".join(fish.outline(x, y, sp["length"] * fss, sp["depth"], 1, sp["tail"], sp.get("spiny", False),
+                                       sp.get("barbels", False), sp.get("scutes", False))),
+                 fill="none", stroke=INK, stroke_width=0.08, stroke_linejoin="round")
+        svg.layer(L["text"])
+        tx_ = fx0 + col * 120 + 70
+        svg.text(tx_, y - 3, sp["name"], size=2.0, fill=INK, spacing=0.2)
+        svg.text(tx_, y, f"{sp['latin']} · ~{sp['length']:.2g} m", size=1.6, fill=INK, opacity=0.75)
+        svg.text(tx_, y + 2.6, f"Winter: {sp['habit']}", size=1.6, fill=INK, opacity=0.75)
+        if sp["status"]:
+            svg.text(tx_, y + 5.2, sp["status"], size=1.6, fill=INK, weight="bold")
 
     # Margin: one tick per day of ice, hanging from each winter's line.
     mx = sec.X(width) + 30
@@ -253,10 +309,13 @@ def build(args):
         "The lidar stops at the water surface; the riverbed (dashed) is from depth soundings digitized off a Navionics chart "
         "(feet, taken below the summer pool, 218.2 m below the dam; chart datum not stated; not a survey). Geology: two drillers' logs (Groundwater Information Network), hung from the lidar ground at each "
         "end of the section and joined in straight lines between; the shale thins out westward.",
-        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information Network.",
+        f"Fish: six of the 23 species listed for the Red River (Manitoba waterbody data), chosen as the river's key and "
+        f"at-risk species; DIAGRAM, drawn enlarged at 1:{args.fish_scale} and placed by winter habit, not observation.",
+        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information "
+        "Network; Manitoba Natural Resources (waterbody data); COSEWIC status.",
     ]
     for j, note in enumerate(notes):
-        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
+        svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
 
     svg.layer(L["scale"])
     sb_y = Hp - m - 9
@@ -292,6 +351,10 @@ def main():
     ap.add_argument("--level-csv", default="data/lockport/daily_05OJ010.csv")
     ap.add_argument("--bed", default="data/lockport/bathymetry/bed_from_chart.tif",
                     help="riverbed GeoTIFF (tools/build_bed.py); missing: no bed drawn")
+    ap.add_argument("--fish-scale", type=int, default=100, help="scale fish are drawn at in the section, 1:N")
+    ap.add_argument("--fish-strip-scale", type=int, default=20)
+    ap.add_argument("--fish-each", type=int, default=3, help="individuals of each species in the section")
+    ap.add_argument("--seed-fish", type=int, default=5)
     ap.add_argument("--climate", default="data/lockport/climate/en_climate_daily_MB_5023222_*.csv")
     ap.add_argument("--row", type=int, default=1840, help="DEM row of the section line")
     ap.add_argument("--cols", type=int, nargs=2, default=[1150, 1850], help="DEM columns, west to east")
