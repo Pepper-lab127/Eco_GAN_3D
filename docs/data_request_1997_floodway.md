@@ -34,6 +34,11 @@ following, in any format (CSV, spreadsheet or scanned tables):
 4. If they can be shared, the **independent review of the 1997 floodway
    operation** (Klohn-Crippen Consultants, for the Manitoba Water Commission),
    or a reference for obtaining it.
+5. **Surveyed river cross-sections (bathymetry)** of the Red River near St.
+   Andrews Lock and Dam, for example those used in the province's hydraulic
+   models of the lower Red River.
+6. If available, **fish passage or spring fish-run monitoring** at the dam
+   (counts or timing by species).
 
 The data will be used for non-commercial academic work and credited to the
 Province of Manitoba in every drawing that uses it. If a formal data request
