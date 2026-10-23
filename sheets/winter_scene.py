@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from scipy import ndimage
 
-from drawing import climate, fish, geology, hydrometric, terrain
+from drawing import climate, fish, geology, hydrometric, terrain, texture
 from drawing.section import Section, water_edges
 from drawing.svg import PAPER, Svg, scale_bar
 from drawing.keyplan import key_plan
@@ -164,40 +164,6 @@ def build(args):
     band = np.exp(-((yy - y_horizon * 0.55) / (y_horizon * 0.35)) ** 2)
     cv.over(args.sky_glow, np.clip((cloud - 0.45) * 1.4, 0, 1) * band * 0.25)
 
-    # 2. The receding valley: lidar rows north of the cut, far (hazy) to near.
-    def haze_at(y):
-        return tuple(float(v) for v in top + (glow - top) * np.clip(y / y_horizon, 0, 1) ** 1.6)
-
-    for k, dist in enumerate(sorted(args.far_rows, reverse=True)):
-        r = row - dist
-        if r < 0:
-            continue
-        g = ndimage.uniform_filter1d(dtm[r, c0:c1].astype(float), 5)
-        cnp = np.clip(dsm[r, c0:c1] - dtm[r, c0:c1], 0, 40)
-        cnp = np.where(cnp > 2.5, cnp, 0)
-        near = 1 - dist / max(args.far_rows)
-        haze = 0.93 - 0.6 * near                        # how much the far row fades into the sky
-        gy = Y(at_px(g))
-        ty = Y(at_px(g + ndimage.maximum_filter1d(cnp, 3)))
-        # Snow-covered ground mass.
-        m = (yy >= gy[None, :]).astype(np.float32)
-        snow_col = mix(args.snow, haze_at(y_horizon), haze)
-        shade = np.clip((yy - gy[None, :]) / (R * 25), 0, 1)
-        col = np.array(snow_col, np.float32)[None, None, :] * (1 - 0.55 * shade[..., None])
-        cv.over(col, m * (0.12 + 0.38 * near))
-        # Bare canopy: a branchy texture between ground and lidar crown tops.
-        tex = fbm((cv.H // 2, cv.W // 2), rng, scales=(6, 2, 1), weights=(0.3, 0.4, 0.3), aniso=(1.4, 0.6))
-        tex = np.asarray(Image.fromarray((tex * 255).astype(np.uint8)).resize((cv.W, cv.H)), np.float32) / 255
-        inside = (yy >= ty[None, :]) & (yy < gy[None, :])
-        dens = np.clip((tex - 0.42) * 3.0, 0, 1) * inside
-        cv.over(mix(args.tree, haze_at(y_horizon), haze), dens * (0.3 + 0.5 * near))
-
-    # 3. Low valley mist at the level of the ice.
-    yi = float(Y(wl))
-    mist = np.exp(-((yy - yi) / (R * 14)) ** 2) * (0.8 + 0.2 * cloud)
-    cv.over(args.sky_glow, np.clip(mist * 0.35, 0, 1))
-
-    # 4. Trees on and just behind the cut, from lidar crown tops.
     def draw_tree(draw, x, yb, h_px, w_px, width, depth=9):
         """A leafless tree grown naturally, then fitted to the lidar crown:
         height h_px, crown width w_px."""
@@ -214,16 +180,79 @@ def build(args):
                 a2 = a2 * 0.85 + (-math.pi / 2) * 0.15            # a slight lift toward the light
                 seg(x2, y2, a2, length * rng.uniform(0.66, 0.8), wdt * 0.6, d - 1)
 
-        segs.append((0, 0, rng.normal(0, 0.03), -0.38, 1.0))
-        seg(segs[0][2], -0.38, -math.pi / 2 + rng.normal(0, 0.1), 0.17, 0.75, depth)
+        trunk = rng.uniform(0.18, 0.3)
+        segs.append((0, 0, rng.normal(0, 0.03), -trunk, 1.0))
+        for _k in range(2 if rng.random() < 0.6 else 3):                  # forked low, like elm and cottonwood
+            seg(segs[0][2], -trunk, -math.pi / 2 + rng.normal(0, 0.45), 0.2, 0.7, depth)
         pts = np.array([(a, b) for s_ in segs for a, b in ((s_[0], s_[1]), (s_[2], s_[3]))])
         top = pts[:, 1].min()
         sx = w_px / max(np.ptp(pts[:, 0]), 1e-3)
         sy = h_px / max(-top, 1e-3)
         for x1_, y1_, x2_, y2_, wd in segs:
-            draw.line([(x + x1_ * sx, yb + y1_ * sy), (x + x2_ * sx, yb + y2_ * sy)], fill=255,
-                      width=max(1, int(round(width * wd))))
+            draw.line([(x + x1_ * sx, yb + y1_ * sy), (x + x2_ * sx, yb + y2_ * sy)],
+                      fill=int(255 * min(1.0, 0.25 + 2.5 * wd)), width=max(1, int(round(width * wd))))
 
+    drift_tex = texture.detail("snow", (cv.H, cv.W), rng, R * 60,
+                               lambda: (fbm((cv.H // 2, cv.W // 2), rng, scales=(10, 3), weights=(0.6, 0.4), aniso=(0.2, 1))))
+    if drift_tex.shape != (cv.H, cv.W):
+        drift_tex = np.asarray(Image.fromarray(drift_tex.astype(np.float32), mode="F").resize((cv.W, cv.H)), np.float32)
+    drift_tex = (drift_tex - drift_tex.min()) / (np.ptp(drift_tex) + 1e-6)
+
+    # 2. The receding valley: lidar rows north of the cut, far (hazy) to near.
+    trunks = fbm((cv.H // 2, cv.W // 2), rng, scales=(1.0, 0.5), weights=(0.6, 0.4), aniso=(40, 1))
+    trunks = np.asarray(Image.fromarray(trunks.astype(np.float32), mode="F").resize((cv.W, cv.H)), np.float32)
+    trunks = np.clip((trunks - 0.5) * 4, 0, 1)
+    speck = fbm((cv.H // 2, cv.W // 2), rng, scales=(2.0, 0.8), weights=(0.5, 0.5), aniso=(0.6, 1.4))
+    speck = np.asarray(Image.fromarray(speck.astype(np.float32), mode="F").resize((cv.W, cv.H)), np.float32)
+    def haze_at(y):
+        return tuple(float(v) for v in top + (glow - top) * np.clip(y / y_horizon, 0, 1) ** 1.6)
+
+    for k, dist in enumerate(sorted(args.far_rows, reverse=True)):
+        r = row - dist
+        if r < 0:
+            continue
+        g = ndimage.uniform_filter1d(dtm[r, c0:c1].astype(float), 5)
+        cnp = np.clip(dsm[r, c0:c1] - dtm[r, c0:c1], 0, 40)
+        cnp = np.where(cnp > 2.5, cnp, 0)
+        near = 1 - dist / max(args.far_rows)
+        haze = 0.93 - 0.6 * near                        # how much the far row fades into the sky
+        gy = Y(at_px(g))
+        # Snow-covered ground mass, textured with drift and lit along its crest.
+        m = (yy >= gy[None, :]).astype(np.float32)
+        snow_col = np.array(mix(args.snow, haze_at(y_horizon), haze), np.float32)
+        body_col = np.array(mix(args.tree, haze_at(y_horizon), 0.25 + 0.6 * haze), np.float32)
+        fall = 1 - np.exp(-np.clip(yy - gy[None, :], 0, None) / (R * (1.5 + 3 * near)))
+        # The bank faces are wooded where the lidar shows canopy: a stand of
+        # thin dark trunks over the snow, fading into the valley fog below.
+        wood = at_px(np.where(cnp > 2.5, 1.0, 0.0))
+        wood = ndimage.gaussian_filter1d(np.nan_to_num(wood), R * 2)
+        col = snow_col + (body_col - snow_col) * fall[..., None]
+        col = col * (1 - 0.6 * (1 - haze) * (0.4 + 0.6 * wood[None, :, None]) * trunks[..., None])
+        # Snow lying in patches on the slope between the trees.
+        patch = np.clip((drift_tex - 0.55) * 4, 0, 1) * np.clip((speck - 0.45) * 3, 0, 1)
+        col = col + (snow_col - col) * (patch * 0.5 * (1 - 0.6 * haze))[..., None]
+        col = col * (1 + 0.12 * (1 - haze) * (drift_tex[..., None] - 0.5))
+        fog_below = np.exp(-np.clip(yy - gy[None, :], 0, None) / (R * (40 + 60 * near)))
+        cv.over(col, m * (0.55 + 0.4 * near) * (0.35 + 0.65 * fog_below))
+        rim = np.exp(-np.clip(yy - gy[None, :], 0, None) / (R * 0.8)) * m
+        cv.over(args.snow, rim * 0.2 * near * (0.5 + drift_tex))
+        # Bare trees at each lidar crown on the row, softened by distance.
+        hgt_r = np.where((cnp > 3) & (cnp < 40), cnp, np.nan)
+        img = cv.mask()
+        dr = ImageDraw.Draw(img)
+        for i in crown_tops(hgt_r, 6.0, max(4, args.tree_spacing - 2)):
+            h_px = float(hgt_r[i] * sec.sv * R)
+            draw_tree(dr, float(X(i + 0.5)), float(Y(g[i])), h_px, h_px * rng.uniform(0.45, 0.7),
+                      width=R * 0.35, depth=7)
+        a_t = arr(blur(img, 0.8 + 3.5 * (1 - near)))
+        cv.over(mix(args.tree, haze_at(y_horizon), haze), a_t * (0.35 + 0.5 * near))
+
+    # 3. Low valley mist at the level of the ice.
+    yi = float(Y(wl))
+    mist = np.exp(-((yy - yi) / (R * 14)) ** 2) * (0.8 + 0.2 * cloud)
+    cv.over(args.sky_glow, np.clip(mist * 0.35, 0, 1))
+
+    # 4. Trees on and just behind the cut, from lidar crown tops.
     for k, back in enumerate(sorted(args.tree_rows, reverse=True)):
         r = row - back
         hgt = dsm[r, c0:c1] - dtm[r, c0:c1]
@@ -263,6 +292,18 @@ def build(args):
     beds = np.where(strata[..., None] == 3,
                     0.05 * np.sin((yy[..., None] / R + 6 * tex_l[..., None]) / 2.2 * 2 * np.pi), 0)
     col = col + lam + sh + clasts + vugs + beds
+    # Large, soft mottling (weathering, moisture) and per-material grain:
+    # photographs from data/textures if on file, otherwise procedural.
+    mot = fbm((cv.H // 4, cv.W // 4), rng, scales=(60, 20, 6), weights=(0.5, 0.3, 0.2), aniso=(0.5, 1.0))
+    mot = np.asarray(Image.fromarray(mot.astype(np.float32), mode="F").resize((cv.W, cv.H), Image.BICUBIC), np.float32)
+    col = col * (1 + 0.5 * (mot[..., None] - 0.5))
+    for i, (tname, tsize) in enumerate((("clay", 80), ("till", 60), ("shale", 60), ("limestone", 120))):
+        sel = strata == i
+        if not sel.any():
+            continue
+        tdet = texture.photo(tname, (cv.H, cv.W), R * tsize, rng)
+        if tdet is not None:
+            col = col * (1 + 0.12 * np.where(sel, tdet, 0)[..., None])
     depth_dark = np.clip((yy - cut_top[None, :]) / (R * 220), 0, 1)[..., None]
     col = col * (1 - 0.4 * depth_dark)
     cv.over(col, below.astype(np.float32))
@@ -272,7 +313,59 @@ def build(args):
         ly = layer_y[kname].astype(int)
         ok = (ly > 0) & (ly < cv.H - 1) & (ly > cut_top)
         edge[ly[ok], xs_px[ok]] = 1
-    cv.over((0.6, 0.6, 0.6), ndimage.gaussian_filter(edge, 0.7) * 1.5 * below)
+    cv.over((0.6, 0.6, 0.6), ndimage.gaussian_filter(edge, 1.2) * 0.8 * below)
+    # Joints in the carbonate: near-vertical fractures and bedding partings,
+    # the paths groundwater takes through the aquifer (interpretive).
+    jm = cv.mask()
+    jd = ImageDraw.Draw(jm)
+    carb = layer_y["carbonate"]
+    for _ in range(int(args.joints * cv.W / 1000)):
+        x = rng.uniform(0, cv.W)
+        y = float(carb[int(x)]) + rng.uniform(0, cv.H - float(carb[int(x)]))
+        pts = [(x, y)]
+        vertical = rng.random() < 0.6
+        for _k in range(int(rng.integers(10, 80))):
+            if vertical:
+                x += rng.normal(0, 0.6)
+                y += R * 0.6
+            else:
+                x += R * 0.8
+                y += rng.normal(0, 0.35)
+            if not (0 <= x < cv.W and carb[min(int(x), cv.W - 1)] < y < cv.H):
+                break
+            pts.append((x, y))
+        if len(pts) > 2:
+            jd.line(pts, fill=int(rng.integers(60, 200)), width=1)
+    cv.over(args.joint, arr(blur(jm, 0.5)) * 0.6 * below)
+
+
+    # Roots below the trees on the cut: branching, tapering, into the clay
+    # to about a third of the tree's height, rarely past the till (interpretive).
+    rm = cv.mask()
+    rd = ImageDraw.Draw(rm)
+    hgt0 = dsm[row, c0:c1] - dtm[row, c0:c1]
+    hgt0 = np.where((hgt0 > 3) & (hgt0 < 40), hgt0, np.nan)
+
+    def root(x, y, ang, length, wdt, d, y_max):
+        for _k in range(int(length)):
+            ang += rng.normal(0, 0.18)
+            ang = ang * 0.92 + (math.pi / 2) * 0.08                       # gravity
+            x2, y2 = x + math.cos(ang) * R * 0.5, y + math.sin(ang) * R * 0.5
+            if y2 > y_max:
+                return
+            rd.line([(x, y), (x2, y2)], fill=int(90 + 120 * wdt), width=max(1, int(round(wdt * R * 0.5))))
+            x, y = x2, y2
+            wdt *= 0.985
+            if d < 4 and rng.random() < 0.05:
+                root(x, y, ang + rng.choice((-1, 1)) * rng.uniform(0.4, 1.0), length * 0.5, wdt * 0.6, d + 1, y_max)
+
+    for i in crown_tops(hgt0, 6.0, args.tree_spacing):
+        x0_, y0_ = float(X(i + 0.5)), float(Y(dtm[row, c0 + i]))
+        depth_px = min(hgt0[i] * 0.33, 4.0) * sec.sv * R
+        y_max = min(y0_ + depth_px, float(layer_y["shale"][min(int(x0_), cv.W - 1)]))
+        for _k in range(int(rng.integers(5, 9))):
+            root(x0_, y0_ + 1, rng.uniform(0.15, math.pi - 0.15), depth_px / (R * 0.5) * rng.uniform(0.5, 1.2), 1.0, 0, y_max)
+    cv.over(args.root, arr(blur(rm, 0.5)) * 0.7 * below)
 
     # 6. Water under the ice: dark, lit from above through the ice in shafts.
     wtop = Y(ice_bottom)
@@ -286,6 +379,9 @@ def build(args):
     shafts = (shafts - shafts.min()) / (np.ptp(shafts) + 1e-6)
     light = (shafts[None, :] ** 3) * np.exp(-dep * 3.2) * inwater
     cv.over(args.ice_light, np.clip(light * 0.55, 0, 1))
+    silt = fbm((cv.H // 2, cv.W // 2), rng, scales=(24, 8, 3), weights=(0.55, 0.3, 0.15), aniso=(0.4, 1.6))
+    silt = np.asarray(Image.fromarray(silt.astype(np.float32), mode="F").resize((cv.W, cv.H), Image.BICUBIC), np.float32)
+    cv.over(args.silt, np.clip((silt - 0.45) * 2.2, 0, 1) * (0.25 + 0.6 * dep) * inwater * 0.5)
     n_p = int(args.particles * (b_ch - a_ch))
     pm = cv.mask()
     pd = ImageDraw.Draw(pm)
@@ -346,29 +442,52 @@ def build(args):
                 cv.over(body, a_f * (1 - 0.45 * far), fx0, fy0)
                 break
 
-    # 8. Ice: translucent, its growth bands one per recorded day.
+    # 8. Ice: cloudy white ice formed before the new year over clear ice grown
+    # down after it; one faint band per recorded day; threads hanging below.
     yt, yb_ = float(Y(wl)), float(Y(ice_bottom))
     xa, xb = float(X(a_ch)), float(X(b_ch + 1))
-    ice_m = np.zeros((cv.H, cv.W), np.float32)
-    ice_m[int(yt):int(math.ceil(yb_)), int(xa):int(xb)] = 1
-    tint = fbm((cv.H // 2, cv.W // 2), rng, scales=(20, 6, 2), aniso=(0.3, 1))
-    tint = np.asarray(Image.fromarray((tint * 255).astype(np.uint8)).resize((cv.W, cv.H)), np.float32) / 255
-    cv.over(args.ice, ice_m * (0.55 + 0.35 * tint))
+    ice_m = ((yy >= yt) & (yy < yb_) & (xs_px[None, :] >= xa) & (xs_px[None, :] < xb)).astype(np.float32)
+    jan1 = min(wdays, key=lambda d: abs((d - dt.date(y0w + 1, 1, 1)).days))
+    y_clear = yt + (yb_ - yt) * ice[jan1] / ice[last]
+    y_clear = y_clear + ndimage.gaussian_filter1d(rng.standard_normal(cv.W), R * 4) * R * 3
+    clear = np.clip((yy - y_clear[None, :]) / 2.0 + 0.5, 0, 1)
+    tint = fbm((cv.H // 2, cv.W // 2), rng, scales=(8, 3, 1), aniso=(0.3, 1))
+    tint = np.asarray(Image.fromarray(tint.astype(np.float32), mode="F").resize((cv.W, cv.H)), np.float32)
+    white = np.array(args.snow) * (0.92 + 0.12 * tint[..., None])
+    blue = np.array(args.ice) * (0.75 + 0.35 * tint[..., None])
+    cv.over(white + (blue - white) * clear[..., None], ice_m * 0.95)
     bands = np.zeros((cv.H, cv.W), np.float32)
     for d in wdays:
         yb_d = int(Y(level[d] - ice[d]))
         if 0 < yb_d < cv.H:
-            bands[yb_d, int(xa):int(xb)] += 0.35
-    cv.over(args.ice_light, np.clip(ndimage.gaussian_filter(bands, 0.4), 0, 1) * ice_m)
-    glow = ndimage.gaussian_filter(ice_m, R * 1.6)
-    cv.over(args.ice_light, np.clip(glow * 0.45, 0, 1) * (1 - ice_m))
+            bands[yb_d, int(xa):int(xb)] += 0.25
+    cv.over(args.ice_light, np.clip(ndimage.gaussian_filter(bands, 0.4), 0, 1) * ice_m * 0.6)
+    th = cv.mask()
+    td = ImageDraw.Draw(th)
+    for _ in range(int(args.threads * (b_ch - a_ch))):
+        x = rng.uniform(xa, xb)
+        y = yb_ - rng.uniform(0, 2)
+        pts = [(x, y)]
+        for _k in range(int(rng.lognormal(2.2, 0.6))):
+            x += rng.normal(0, 0.5)
+            y += R * 0.3
+            pts.append((x, y))
+        td.line(pts, fill=int(rng.integers(50, 180)), width=1)
+    cv.over(args.ice_light, arr(blur(th, 0.4)) * inwater * 0.6)
+    glow = np.exp(-np.clip(yy - yb_, 0, None) / (R * 3)) * inwater
+    cv.over(args.ice_light, glow * 0.25)
 
     # 9. Snow: lying on the ground and the ice, falling through the sky.
     snow_t = args.snow_depth * sec.sv * R
-    sl = np.zeros((cv.H, cv.W), np.float32)
     top_surface = np.where(in_channel[col_idx] & (xs_px >= xa) & (xs_px <= xb), yt, gy_cut)
-    sl[(yy >= top_surface[None, :] - snow_t) & (yy < top_surface[None, :] + 1)] = 1
-    cv.over(args.snow, ndimage.gaussian_filter(sl, 0.8) * 0.95)
+    drift_1d = ndimage.gaussian_filter1d(rng.standard_normal(cv.W), R * 6)
+    thick = snow_t * np.clip(1 + 1.6 * drift_1d / (drift_1d.std() + 1e-6) * 0.4, 0.3, 2.2)
+    s_top = top_surface - thick
+    sl = ((yy >= s_top[None, :]) & (yy < top_surface[None, :] + 1)).astype(np.float32)
+    sl = ndimage.gaussian_filter(sl, 0.6)
+    in_s = np.clip((yy - s_top[None, :]) / np.maximum(thick, 1)[None, :], 0, 1)
+    scol = np.array(args.snow) * (1.05 - 0.25 * in_s[..., None]) * (1 + 0.06 * (drift_tex[..., None] - 0.5))
+    cv.over(scol, sl * 0.97)
     n_flakes = int(precip * args.flakes_per_mm)
     for layer, (n_share, size, bl, op) in enumerate(((0.65, 0.5, 0.2, 0.5), (0.27, 1.1, 0.8, 0.6), (0.08, 3.0, 3.0, 0.45))):
         img = cv.mask()
@@ -505,6 +624,8 @@ def main():
     ap.add_argument("--snow-depth", type=float, default=0.3, help="m of snow drawn lying on ground and ice")
     ap.add_argument("--flakes-per-mm", type=float, default=60)
     ap.add_argument("--particles", type=float, default=6, help="suspended particles per m of channel")
+    ap.add_argument("--joints", type=float, default=140, help="carbonate joints per 1000 px")
+    ap.add_argument("--threads", type=float, default=20, help="threads under the ice per m of channel")
     ap.add_argument("--fish-scale", type=int, default=40)
     ap.add_argument("--fish-each", type=int, default=3)
     ap.add_argument("--res", type=float, default=5.0, help="raster px per mm (5 = 127 dpi)")
@@ -519,8 +640,9 @@ def main():
     ap.set_defaults(sky_top=(0.03, 0.04, 0.055), sky_glow=(0.36, 0.41, 0.47), snow=(0.8, 0.84, 0.88),
                     tree=(0.04, 0.045, 0.05), water_top=(0.09, 0.15, 0.18), water_deep=(0.015, 0.025, 0.03),
                     ice=(0.7, 0.84, 0.9), ice_light=(0.78, 0.92, 0.97), fish_back=(0.05, 0.06, 0.06),
-                    fish_belly=(0.42, 0.46, 0.45),
-                    strata=[(0.26, 0.24, 0.22), (0.2, 0.19, 0.175), (0.14, 0.15, 0.16), (0.22, 0.225, 0.23)])
+                    fish_belly=(0.42, 0.46, 0.45), silt=(0.2, 0.26, 0.26), joint=(0.55, 0.57, 0.56),
+                    root=(0.36, 0.31, 0.26),
+                    strata=[(0.29, 0.265, 0.24), (0.23, 0.215, 0.195), (0.16, 0.17, 0.18), (0.27, 0.275, 0.28)])
     build(ap.parse_args())
 
 

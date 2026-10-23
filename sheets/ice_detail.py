@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from scipy import ndimage
 
-from drawing import climate, hydrometric, terrain
+from drawing import climate, hydrometric, terrain, texture
 from drawing.svg import PAPER, Svg, scale_bar
 
 INK = "#1a1d1f"
@@ -94,6 +94,11 @@ def build(args):
     q_last = flow.get(last, np.nan)
     vel = q_last / area if area > 0 and q_last == q_last else 0.1
     clear_from = dt.date(y0 + 1, 1, 1)
+    # Snowfalls on the ice, oldest first: each a layer in the snowpack.
+    falls = [(d, v["snow"]) for d, v in sorted(days.items())
+             if first_ice <= d <= last and v.get("snow") and v["snow"] >= args.min_fall]
+    wind = days.get(last, {})
+    gust = (wind.get("gust_spd") or 0.0, (wind.get("gust_dir") or 27) * 10)
 
     # ---------------------------------------------------------------- layout
     Wp, Hp = PAPER[args.paper]
@@ -101,7 +106,7 @@ def build(args):
     R = args.res
     img_x, img_y = 40.0, 70.0
     img_w = Wp - 2 * img_x
-    air = 0.22
+    air = args.air
     bed_show = 0.38
     total_m = air + snow_t + ice_t + water_d + bed_show
     img_h = total_m * s
@@ -125,6 +130,14 @@ def build(args):
     e_ice = edge(y_ice, ppm * 0.015, ppm * 0.4, 2)
     e_water = edge(y_water, ppm * 0.02, ppm * 0.35, 3)
     e_bed = edge(y_bed, ppm * 0.05, ppm * 0.5, 4)
+    # Current ripples on the clay: asymmetric (gentle stoss, steeper lee), their
+    # spacing wandering a little.
+    lam_x = ppm * args.ripple * (1 + 0.25 * ndimage.gaussian_filter1d(rng.standard_normal(W), ppm * 0.3) * 6)
+    ph_r = np.cumsum(1.0 / np.clip(lam_x, ppm * 0.05, None))
+    saw = ph_r % 1.0
+    rip = np.where(saw < 0.72, saw / 0.72, (1 - saw) / 0.28)
+    rip = ndimage.gaussian_filter1d(0.5 - 0.5 * np.cos(np.pi * rip), ppm * 0.008).astype(np.float32)
+    e_bed = e_bed - (rip - 0.5) * ppm * 0.016
 
     # Domain warp shared by all materials: everything flows a little.
     wx = fbm((H, W), rng, ppm * 0.25, 4, small=small) * ppm * 0.03
@@ -137,8 +150,25 @@ def build(args):
         a = np.clip(alpha, 0, 1)[..., None]
         rgb[:] = rgb + (col - rgb) * a
 
-    # Paper-white air above.
-    rgb[:] = np.array(args.paper_tone, np.float32)
+    # Air above the snow: cold haze, brightest at the snow, with drifting
+    # snow (saltation) blown along the surface at the day's gust speed.
+    sky_t = np.clip(yy / max(y_snow, 1), 0, 1)
+    rgb[:] = (np.array(args.sky_top) + (np.array(args.paper_tone) - np.array(args.sky_top)) * sky_t[..., None] ** 0.7)
+    haze = warp(fbm((H, W), rng, ppm * 0.12, 4, aniso=(0.35, 2.5), small=small), wx * 3, wy)
+    paint(args.paper_tone, np.clip(0.25 + 0.2 * haze, 0, 1) * smoothstep(0.2, 1.0, sky_t) * (yy < y_snow + ppm * 0.1))
+    drift = Image.new("L", (W, H), 0)
+    dd = ImageDraw.Draw(drift)
+    sgn = 1 if math.sin(math.radians(gust[1] + 180)) >= 0 else -1      # blowing east or west
+    streak = ppm * 0.01 * (1 + gust[0] / 15)
+    for _ in range(int(args.drift * W / 1000 * (0.3 + gust[0] / 60))):
+        x = rng.uniform(0, W)
+        hgt = rng.exponential(ppm * 0.035)                               # most drift hugs the surface
+        y = e_snow[int(x)] - hgt
+        if y < 0:
+            continue
+        ln = streak * rng.uniform(0.5, 2.0)
+        dd.line([(x, y), (x + sgn * ln, y - rng.normal(0, ln * 0.06))], fill=int(rng.integers(40, 170)), width=1)
+    paint(args.snow, np.asarray(drift.filter(ImageFilter.GaussianBlur(0.8)), np.float32) / 255.0 * 0.8)
 
     # ---------------------------------------------------------------- water
     m_water = (yy >= e_water[None, :]) & (yy < e_bed[None, :])
@@ -150,6 +180,16 @@ def build(args):
     mott = warp(fbm((H, W), rng, ppm * 0.18, 5, aniso=(0.6, 1.4), small=small), wx, wy)
     wcol = wcol * (1 + 0.08 * mott[..., None])
     paint(wcol, m_water.astype(np.float32))
+    # The Red River is turbid: clouds of fine silt hang in the column, sheared
+    # downstream by the current and thickening toward the bed.
+    tw = texture.detail("water", (H, W), rng, ppm * 0.8,
+                        lambda: fbm((H, W), rng, ppm * 0.08, 4, small=small))
+    cloud = warp(fbm((H, W), rng, ppm * 0.35, 5, aniso=(0.55, 1.8), small=small), wx * 4 + yy * 0.05, wy * 3)
+    cloud = warp(cloud + 0.35 * tw, wx * 2, wy * 2)
+    turb = smoothstep(-0.4, 1.6, cloud) * (0.35 + 0.65 * smoothstep(0.0, 1.0, depth01))
+    paint(args.silt, turb * m_water * 0.45)
+    pockets = smoothstep(0.6, 2.0, -warp(fbm((H, W), rng, ppm * 0.25, 4, small=small), wx * 3, wy * 2))
+    paint(args.water_deep, pockets * m_water * 0.35 * (1 - smoothstep(0.85, 1.0, depth01)))
 
     # Light curtains hanging from the ice: long vertical streaks, fading down,
     # stronger under clear ice (later winter = lower in the ice).
@@ -169,16 +209,18 @@ def build(args):
         dep_ = (y - y_water) / max(y_bed - y_water, 1)
         ln = trail * rng.uniform(0.4, 1.6) * (0.6 + dep_)
         dt_.line([(x, y), (x + ln, y + rng.normal(0, ln * 0.08))], fill=int(rng.integers(30, 150)), width=1)
-    paint(args.light, np.asarray(tr.filter(ImageFilter.GaussianBlur(0.6)), np.float32) / 255.0 * 0.6 * m_water)
+    paint(args.light, np.asarray(tr.filter(ImageFilter.GaussianBlur(0.8)), np.float32) / 255.0 * 0.3 * m_water)
 
-    # Churned water and sediment toward the bed, after the reference's swell.
-    near_bed = smoothstep(0.4, 1.0, depth01)
-    swell = np.zeros((H, W), np.float32)
-    for k, (lam_, amp, sh) in enumerate(((0.09, 4.0, 0.12), (0.035, 2.5, 0.05), (0.015, 1.5, 0.02))):
-        n_ = fbm((H, W), rng, ppm * sh, 4, small=small)
-        ph = yy / (ppm * lam_) + amp * warp(n_, wx * 3, wy * 3) + xx / (ppm * (0.7 + 0.6 * k))
-        swell += (0.5 + 0.5 * np.sin(ph)) ** (8 - 2 * k) * (0.5 / (k + 1))
-    paint(args.sediment, np.clip(swell, 0, 1) * near_bed * m_water * 0.7)
+    # Silt lifted off the bed: soft billows streaming downstream, densest in a
+    # cloudy layer just above the bottom (no hard edges, no repeating rings).
+    near_bed = smoothstep(0.45, 1.0, depth01)
+    bill = np.zeros((H, W), np.float32)
+    for k, (sh, an, w_) in enumerate(((0.22, (0.5, 2.2), 0.6), (0.08, (0.6, 2.8), 0.3), (0.03, (0.7, 3.5), 0.15))):
+        n_ = fbm((H, W), rng, ppm * sh, 4, aniso=an, small=small)
+        n_ = warp(n_, wx * (3 - k) + (yy - y_bed) * 0.25, wy * (2 - 0.5 * k))
+        bill += w_ * smoothstep(-0.2, 1.4, n_)
+    floc = np.exp(-np.clip(e_bed[None, :] - yy, 0, None) / (ppm * 0.12))
+    paint(args.sediment, np.clip(bill * near_bed * 0.55 + floc * 0.4 * (0.6 + 0.4 * bill), 0, 1) * m_water)
     spk = fbm((H, W), rng, 1.2, 2)
     paint(args.light, np.clip((spk - 2.3) * 0.8, 0, 1) * (0.3 + near_bed) * m_water)
 
@@ -189,7 +231,24 @@ def build(args):
     grain_b = fbm((H, W), rng, 1.5, 3)
     bcol = bcol * (1 + 0.07 * grain_b[..., None])
     bcol = bcol * (1 - 0.5 * smoothstep(0, ppm * bed_show, yy - e_bed[None, :]))[..., None]
+    tb = texture.detail("clay", (H, W), rng, ppm * 0.6, lambda: fbm((H, W), rng, ppm * 0.02, 4, small=small))
+    bcol = bcol * (1 + 0.08 * tb[..., None])
     paint(bcol, m_bed.astype(np.float32))
+    # Clasts and shell fragments in the top of the bed.
+    cl = Image.new("L", (W, H), 0)
+    dc = ImageDraw.Draw(cl)
+    for _ in range(int(args.clasts * W / 1000)):
+        x = rng.uniform(0, W)
+        y = e_bed[int(x)] + rng.exponential(ppm * 0.06)
+        r = R * rng.lognormal(-0.4, 0.5)
+        asp = rng.uniform(0.35, 0.8)
+        dc.ellipse([x - r, y - r * asp, x + r, y + r * asp], fill=int(rng.integers(40, 200)))
+    a_cl = np.asarray(cl.filter(ImageFilter.GaussianBlur(0.7)), np.float32) / 255.0
+    paint(args.clast, a_cl * m_bed * 0.45)
+    # Light on the bed surface, brighter on the ripples' stoss faces; troughs in shadow.
+    surf = np.exp(-np.clip(yy - e_bed[None, :], 0, None) / (ppm * 0.012)) * m_bed
+    paint(args.sediment, surf * (0.25 + 0.35 * rip[None, :]))
+    paint(args.clay_dark, np.exp(-np.clip(yy - e_bed[None, :], 0, None) / (ppm * 0.04)) * m_bed * (1 - rip[None, :]) * 0.3)
 
     # ---------------------------------------------------------------- ice
     m_ice = (yy >= e_ice[None, :]) & (yy < e_water[None, :])
@@ -225,7 +284,24 @@ def build(args):
     # ---------------------------------------------------------------- snow
     m_snow = (yy >= e_snow[None, :]) & (yy < e_ice[None, :])
     sn = warp(fbm((H, W), rng, ppm * 0.03, 4, small=small), wx, wy)
-    paint(np.array(args.snow) * (1 - 0.04 * sn[..., None]), m_snow.astype(np.float32))
+    ts = texture.detail("snow", (H, W), rng, ppm * 0.5, lambda: fbm((H, W), rng, ppm * 0.01, 3, small=small))
+    paint(np.array(args.snow) * (1 - 0.04 * sn[..., None] - 0.03 * ts[..., None]), m_snow.astype(np.float32))
+    # Snowfalls, oldest at the bottom: each fall a faint crust line in the pack,
+    # its spacing the fall's share of the settled depth.
+    tot = sum(v for _, v in falls) or 1.0
+    acc = 0.0
+    crust = np.zeros((H, W), np.float32)
+    for d, v in falls:
+        acc += v
+        ycr = e_ice - (acc / tot) * (e_ice - e_snow)
+        yc = (ycr + ppm * 0.004 * sn[np.clip(ycr.astype(int), 0, H - 1), np.arange(W)]).astype(int)
+        ok = (yc > 0) & (yc < H)
+        crust[yc[ok], np.arange(W)[ok]] += 0.6
+    crust = warp(ndimage.gaussian_filter(crust, (0.8, 2.5)), wx, wy * 0.5)
+    paint(args.snow_shadow, np.clip(crust * 2.5, 0, 1) * m_snow * 0.5)
+    paint(args.snow_shadow, smoothstep(ppm * 0.08, 0, e_ice[None, :] - yy) * m_snow * 0.25)     # depth hoar, blue-grey
+    lit = np.exp(-np.clip(yy - e_snow[None, :], 0, None) / (ppm * 0.01)) * m_snow
+    paint((1.0, 1.0, 1.0), lit * 0.6)
 
     # ---------------------------------------------------------------- filaments
     # Traced through a curl-noise field: tangled in the snow and white ice,
@@ -271,9 +347,9 @@ def build(args):
     # Tangled web: snow and white ice.
     for _ in range(int(args.web * W / 1000)):
         x = rng.uniform(0, W)
-        y = rng.uniform(e_snow.min() - ppm * 0.03, e_clear[int(x)])
+        y = rng.uniform(e_snow[int(x)] + ppm * 0.02, e_clear[int(x)])
         trace(x, y, int(rng.integers(6, 60)), R * rng.uniform(0.4, 1.2), False, int(rng.integers(30, 150)),
-              lambda x: (e_snow[int(x)] - ppm * 0.05, e_clear[int(x)] + ppm * 0.04 * rng.random()), fork=0.04)
+              lambda x: (e_snow[int(x)] + ppm * 0.01, e_clear[int(x)] + ppm * 0.04 * rng.random()), fork=0.04)
     # Columnar boundaries and bubble trains: clear ice, denser in bands of fast growth.
     gr = np.array([max(0.0, ice[d] - ice[grow_days[i - 1]]) if i else 0.0 for i, d in enumerate(grow_days)])
     for i, d in enumerate(grow_days):
@@ -343,7 +419,7 @@ def build(args):
             svg.text(xr + 5, y + 0.7, f"{d.strftime('%b 1').upper()} · {ice[d]:.2f} M", size=1.8, fill=INK)
             svg.layer(L["ticks"])
     svg.layer(L["text"])
-    for y, label in ((y_snow, f"SNOW · {snow_t:.2f} M"), (y_ice, f"ICE · {ice_t:.2f} M BY {last.strftime('%b %d').upper()}"),
+    for y, label in ((y_snow, f"SNOW · {snow_t:.2f} M · {len(falls)} FALLS"), (y_ice, f"ICE · {ice_t:.2f} M BY {last.strftime('%b %d').upper()}"),
                      (y_water, f"WATER · {water_d:.1f} M"), (y_bed, "LAKE CLAY")):
         svg.text(img_x - 3, img_y + y / R + 0.7, label, size=1.8, fill=INK, anchor="end", spacing=0.15)
 
@@ -358,7 +434,8 @@ def build(args):
         "days it grew fastest. Light hangs from the underside into water "
         f"{water_d:.1f} m deep (riverbed from chart soundings),",
         f"moving at about {vel:.2f} m/s ({q_last:.0f} m³/s under the ice, {hydrometric.station_id(args.level_csv)}). "
-        f"Snow: {snow_t:.2f} m settled from {precip:.0f} mm of winter precipitation.",
+        f"Snow: {snow_t:.2f} m settled from {precip:.0f} mm of winter precipitation, a crust for each of its {len(falls)} falls.",
+        f"Drifting snow at the day's {gust[0]:.0f} km/h gust; silt clouds and bed ripples interpretive. "
         "Rendered composite; layer thicknesses, timing and current from data, textures interpretive.",
     ]
     for j, c in enumerate(cap):
@@ -386,11 +463,16 @@ def main():
     ap.add_argument("--res", type=float, default=6.0, help="px per mm (6 = 152 dpi)")
     ap.add_argument("--web", type=float, default=2400, help="tangled filaments per 1000 px of width")
     ap.add_argument("--clusters", type=int, default=9, help="clusters of hanging threads")
-    ap.add_argument("--grains", type=float, default=2500, help="suspended grains per 1000 px")
+    ap.add_argument("--grains", type=float, default=1500, help="suspended grains per 1000 px")
     ap.add_argument("--columns", type=float, default=120, help="column traces per day of fastest growth, per 1000 px")
     ap.add_argument("--hang", type=float, default=170, help="hanging threads per 1000 px")
     ap.add_argument("--bubbles", type=float, default=500)
     ap.add_argument("--curtain-len", type=float, default=0.55, help="m the light curtains hang")
+    ap.add_argument("--air", type=float, default=0.3, help="m of air shown above the snow")
+    ap.add_argument("--drift", type=float, default=900, help="drifting snow streaks per 1000 px at a 60 km/h gust")
+    ap.add_argument("--min-fall", type=float, default=0.4, help="cm; smaller snowfalls are not drawn as layers")
+    ap.add_argument("--ripple", type=float, default=0.16, help="m between bed ripples")
+    ap.add_argument("--clasts", type=float, default=150)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--paper", choices=list(PAPER), default="ARCHD_P")
     ap.add_argument("--out", default="outputs/sheets/04c_under_the_ice.svg")
@@ -398,7 +480,8 @@ def main():
                     ice_white=(0.86, 0.91, 0.93), ice_blue=(0.55, 0.72, 0.82), ice_deep=(0.3, 0.47, 0.6),
                     water_top=(0.36, 0.52, 0.62), water_mid=(0.16, 0.27, 0.34), water_deep=(0.14, 0.22, 0.23),
                     sediment=(0.62, 0.7, 0.68), clay=(0.27, 0.27, 0.25), light=(0.9, 0.95, 0.97),
-                    web_tone=(0.97, 0.98, 0.99))
+                    web_tone=(0.97, 0.98, 0.99), sky_top=(0.74, 0.78, 0.8), silt=(0.42, 0.47, 0.44),
+                    clast=(0.55, 0.53, 0.48), clay_dark=(0.1, 0.1, 0.09), snow_shadow=(0.7, 0.76, 0.82))
     build(ap.parse_args())
 
 
