@@ -102,6 +102,11 @@ class Svg:
         )
         return f"url(#{cid})"
 
+    def clip_path(self, d):
+        cid = self.uid("clip")
+        self.defs.append(f'<clipPath id="{cid}"><path d="{d}"/></clipPath>')
+        return f"url(#{cid})"
+
     def rect(self, x, y, w, h, **kw):
         self.body.append(f"<rect {_attrs(x=x, y=y, width=w, height=h, **kw)}/>")
 

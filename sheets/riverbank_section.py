@@ -23,7 +23,7 @@ import os
 
 import numpy as np
 
-from drawing import climate, hydrometric, terrain
+from drawing import climate, geology, hydrometric, terrain
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile
 from drawing.svg import PAPER, Svg, scale_bar
@@ -72,7 +72,9 @@ def build(args):
     sec = Section(m + 40, m + 70, args.scale, args.scale, args.z_top)
     svg = Svg(Wp, Hp)
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
-             wind="SKY · GUST STREAKS · 0.08 mm", winddot="SKY · GUST DOTS · 0.4 mm",
+             geo_clay="GEOLOGY · LAKE CLAY, DASHES · 0.08 mm", geo_till="GEOLOGY · TILL, PEBBLES · 0.08 mm",
+             geo_shale="GEOLOGY · SHALE, LINES · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BRICK · 0.08 mm",
+             wind="SKY · WIND POINT CLOUD · 0.12 mm",
              water="WATER LEVELS · 0.05 mm", flood="1997 CREST (EST.), DASHED · 0.12 mm",
              canopy="CANOPY STIPPLE (LIDAR) · 0.2 mm", trunks="TRUNKS · 0.25 mm",
              roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
@@ -108,27 +110,28 @@ def build(args):
         def sky_z(t):
             return rng.uniform(sky_lo, sky_hi)
         wind_m, sky_station = args.wind_m, station
-    streaks, dots = [], []
+    # Each hour scatters points along its wind: more points for a stronger
+    # wind, gathering toward the downwind end, loosely jittered, so the sky
+    # reads as a density of air moving rather than as drawn lines.
+    xs_pts, zs_pts = [], []
     for t, deg, spd in gusts:
         toward = math.radians(deg + 180)               # wind blows toward
         u = math.sin(toward) * spd * wind_m             # + toward east (right)
-        w = math.cos(toward) * spd * wind_m             # + toward north: drawn as a slight rise
+        w = math.cos(toward) * spd * wind_m * 0.08      # north part: a slight rise
         x = rng.uniform(0, width)
         z = sky_z(t)
-        x1 = x + u
-        z1 = z + w * 0.08
-        streaks.append(f"M{sec.X(x):.2f},{sec.Y(z):.2f}L{sec.X(x1):.2f},{sec.Y(z1):.2f}")
-        dots.append(f"M{sec.X(x1):.2f},{sec.Y(z1):.2f}h0")
+        n = max(1, int(round(spd * args.points_per_kmh)))
+        f = rng.beta(2.2, 1.0, n)                       # fraction along the wind, denser downwind
+        xs_pts.append(x + f * u + rng.normal(0, args.jitter_x, n))
+        zs_pts.append(z + f * w + rng.normal(0, args.jitter_z, n))
+    xs_pts = np.concatenate(xs_pts) % width             # wrap across the frame
+    zs_pts = np.concatenate(zs_pts)
+    keep = (zs_pts > ground_top + 1) & (zs_pts < args.z_top)
     clip = svg.clip_rect(sec.X(0), sec.Y(args.z_top), width * sec.sh, (args.z_top - args.z_bottom) * sec.sv)
     svg.layer(L["wind"])
     svg.open_group(clip_path=clip)
-    svg.path(" ".join(streaks), fill="none", stroke=INK, stroke_width=0.08 if not hourly else 0.05,
-             opacity=0.7 if not hourly else 0.45)
-    svg.close_group()
-    svg.layer(L["winddot"])
-    svg.open_group(clip_path=clip)
-    svg.path("".join(dots), fill="none", stroke=INK, stroke_width=0.4 if not hourly else 0.25,
-             stroke_linecap="round")
+    svg.path("".join(f"M{sec.X(x):.2f},{sec.Y(z):.2f}h0" for x, z in zip(xs_pts[keep], zs_pts[keep])),
+             fill="none", stroke=INK, stroke_width=args.wind_dot, stroke_linecap="round", opacity=0.7)
     svg.close_group()
 
     # Water below the dam: every open-water day's level, from the bank out to the frame.
@@ -207,27 +210,33 @@ def build(args):
     else:
         svg.text(sec.X(width / 2), sec.Y(args.z_top - 3), f"SKY · {len(gusts)} DAYS OF STRONG GUSTS, "
                  f"{min(days).year}–{max(days).year}", size=2.0, fill=INK, anchor="middle", spacing=0.2)
-    svg.text(sec.X(width / 2), sec.Y(args.z_bottom + 6), "LAKE AGASSIZ CLAY, TILL AND LIMESTONE AQUIFER: AWAITING WELL LOGS",
-             size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.6)
+    # Geology from the two well logs; blank under the unsurveyed riverbed.
+    cols = np.arange(*args.cols)
+    river = ground <= float(np.nanmin(ground)) + 0.15
+    bed_cap = np.where(river, float(np.nanmin(ground)) - 6.0, np.inf)
+    geology.draw_layers(svg, sec, ch, cols, ground, lambda c: float(dtm[args.row, int(c)]), args.z_bottom, INK,
+                        weight=0.08, top_cap=bed_cap, layer_names={k: L[f"geo_{k}"] for k in geology.LAYERS})
+    svg.layer(L["text"])
 
     tx, ty = m + 8, m + 12
     svg.text(tx, ty, "RED RIVER AT LOCKPORT — RIVERBANK SECTION B–B′", size=5.2, fill=INK, spacing=0.4)
     svg.text(tx, ty + 7, f"EAST BANK, ABOUT 300 M BELOW ST. ANDREWS LOCK AND DAM · 1:{args.scale:,} (TRUE SCALE)",
              size=2.4, fill=INK, spacing=0.3)
     notes = [
-        (f"Sky: each streak one hour's wind at {sky_station.title()}; its length is the west–east part of the wind, "
-         f"{wind_m:g} m per km/h, the dot at its downwind end. Height in the sky is time (months at right); "
-         "position across is scattered." if hourly else
-         f"Sky: each streak one day's strongest gust at {sky_station.title()} (recorded when over about 31 km/h); "
-         f"its length is the west–east part of the gust, {wind_m:g} m per km/h, the dot at its downwind end. "
-         "Positions in the sky are scattered, not measured."),
+        (f"Sky: each hour's wind at {sky_station.title()} scatters points along its west–east travel ({wind_m:g} m per km/h), "
+         f"{args.points_per_kmh:g} points per km/h, gathering downwind: dense air is strong, steady wind. Height in the sky is "
+         "time (months at right); position across is scattered." if hourly else
+         f"Sky: each day's strongest gust at {sky_station.title()} (recorded when over about 31 km/h) scatters points along its "
+         f"west–east travel, {wind_m:g} m per km/h; positions in the sky are scattered, not measured."),
         "Ground and canopy heights: 1 m lidar along the section.",
         "Canopy: stippled from the lidar surface down to an assumed crown base; trunks at each crown top.",
         "Roots: a DIAGRAM sized from each tree's height (to 3 m deep); species not identified (cottonwood, elm and ash "
         "are typical of this bank).",
         f"Water: every May–October day's level below the dam ({hydrometric.station_id(args.level_csv)}); the 1997 crest "
         "is estimated from flow (see sheet 05).",
-        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada daily climate data.",
+        "Geology: two drillers' logs either side of the river (Groundwater Information Network), hung from the lidar ground "
+        "and joined in straight lines; blank under the unsurveyed riverbed.",
+        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information Network.",
     ]
     for j, note in enumerate(notes):
         svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 5 else 0.65)
@@ -246,7 +255,7 @@ def build(args):
     # The cut's letters at both ends of the section.
     svg.layer(L["text"])
     for c, letter, anchor in ((0, ("B", "B′")[0], "end"), (len(ch), ("B", "B′")[1], "start")):
-        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) + 1, letter, size=4.5,
+        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) - 4, letter, size=4.5,
                  fill=INK, anchor=anchor)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -269,7 +278,11 @@ def main():
     ap.add_argument("--hourly", default="data/lockport/climate/en_climate_hourly_MB_*.csv",
                     help="ECCC hourly files for the sky (empty: use daily gusts)")
     ap.add_argument("--wind-m", type=float, default=0.5, help="m of streak per km/h of gust (daily gusts)")
-    ap.add_argument("--hourly-m", type=float, default=0.25, help="m of streak per km/h (hourly wind)")
+    ap.add_argument("--hourly-m", type=float, default=0.25, help="m of wind per km/h (hourly wind)")
+    ap.add_argument("--points-per-kmh", type=float, default=0.3, help="sky points per km/h of wind, per record")
+    ap.add_argument("--jitter-x", type=float, default=1.2, help="m of horizontal scatter of sky points")
+    ap.add_argument("--jitter-z", type=float, default=0.35, help="m of vertical scatter of sky points")
+    ap.add_argument("--wind-dot", type=float, default=0.12, help="sky point diameter, mm")
     ap.add_argument("--min-tree", type=float, default=6.0, help="m canopy height counted as a tree top")
     ap.add_argument("--tree-spacing", type=int, default=6, help="m between tree tops")
     ap.add_argument("--crown-base", type=float, default=0.4, help="crown base as a share of tree height")

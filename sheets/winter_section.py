@@ -24,7 +24,7 @@ import os
 
 import numpy as np
 
-from drawing import climate, hydrometric, terrain
+from drawing import climate, geology, hydrometric, terrain
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile, water_edges
 from drawing.svg import PAPER, Svg, scale_bar
@@ -73,6 +73,8 @@ def build(args):
     svg = Svg(Wp, Hp, background=GROUND)
 
     L = dict(frame="FRAME · 0.15 mm", grid="DATUM GRID, DOTTED · 0.06–0.1 mm",
+             geo_clay="GEOLOGY · LAKE CLAY, DASHES · 0.06 mm", geo_till="GEOLOGY · TILL, PEBBLES · 0.06 mm",
+             geo_shale="GEOLOGY · SHALE, LINES · 0.06 mm", geo_carbonate="GEOLOGY · CARBONATE, BRICK · 0.06 mm",
              canopy="WINTER CANOPY (LIDAR) · 0.05 mm", water="WINTER WATER SURFACES · 0.05 mm",
              column="WATER COLUMN, FADING · 0.06 mm", growth="ICE · DAILY GROWTH LINES · 0.04 mm",
              ice="ICE · EACH WINTER'S THICKEST · 0.1 mm", ground="GROUND (LIDAR) · 0.25 mm",
@@ -130,6 +132,14 @@ def build(args):
         a, b = water_edges(for_edges, z, mid)
         zz = z - coldest["ice"][d_]
         svg.line(sec.X(a), sec.Y(zz), sec.X(b + 1), sec.Y(zz), stroke=INK, stroke_width=0.04, opacity=0.5)
+
+    # Geology from the two well logs, left blank under the unsurveyed riverbed.
+    cols = np.arange(c0, c1)
+    bed_cap = np.where(in_channel, lidar_water - 0.8 - args.column_depth, np.inf)
+    geology.draw_layers(svg, sec, ch, cols, ground, lambda c: float(dtm[row, int(c)]), args.z_bottom, INK,
+                        weight=0.06, top_cap=bed_cap,
+                        layer_names={k: L[f"geo_{k}"] for k in geology.LAYERS})
+    svg.layer(L["text"])
 
     # Ground, except where the lidar shows water.
     svg.layer(L["ground"])
@@ -197,8 +207,13 @@ def build(args):
     a, b = water_edges(for_edges, lidar_water, mid)
     svg.text(sec.X((a + b) / 2), sec.Y(lidar_water - 0.8 - depth * 0.55), "WATER COLUMN · DEPTH NOT SURVEYED",
              size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.8)
-    svg.text(sec.X(width / 2), sec.Y(args.z_bottom + 3), "LAKE AGASSIZ CLAY, TILL AND LIMESTONE AQUIFER: "
-             "AWAITING WELL LOGS", size=1.8, fill=INK, anchor="middle", spacing=0.2, opacity=0.55)
+    for name, w in geology.LOCKPORT_WELLS.items():
+        if c0 <= w["col"] < c1:
+            x = sec.X(w["col"] - c0)
+            svg.line(x, sec.Y(dtm[row, w["col"]]), x, sec.Y(max(dtm[row, w["col"]] - w["bottom"], args.z_bottom)),
+                     stroke=INK, stroke_width=0.2, stroke_dasharray="1 0.5")
+            svg.text(x + 1.5, sec.Y(dtm[row, w["col"]]) - 1.5, f"WELL ({name.upper()}) · {w['bottom']:.1f} M LOG",
+                     size=1.7, fill=INK, anchor="start" if name == "west" else "end")
     for c, text in ((args.label_west, "WEST BANK"), (args.label_east, "EAST BANK · RIPARIAN WOOD")):
         svg.text(sec.X(c), sec.Y(args.z_top - 2), text, size=1.8, fill=INK, anchor="middle", spacing=0.2)
 
@@ -216,8 +231,9 @@ def build(args):
         "Each winter's thickest ice is outlined under that day's water level; the coldest winter is filled, with a line for the "
         "underside of its ice on each day.",
         "The lidar stops at the water surface: the water column is drawn fading, with no bed, until a surveyed cross-section "
-        "is available. Geology awaits well logs.",
-        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada daily climate data.",
+        "is available. Geology: two drillers' logs (Groundwater Information Network), hung from the lidar ground at each "
+        "end of the section and joined in straight lines between; the shale thins out westward.",
+        "SOURCES: NRCan HRDEM lidar; Water Survey of Canada; Environment and Climate Change Canada; NRCan Groundwater Information Network.",
     ]
     for j, note in enumerate(notes):
         svg.text(tx, ty + 12 + 2.9 * j, note, size=1.75, fill=INK, opacity=0.85 if j < 4 else 0.65)
@@ -240,7 +256,7 @@ def build(args):
     # The cut's letters at both ends of the section.
     svg.layer(L["text"])
     for c, letter, anchor in ((0, ("A", "A′")[0], "end"), (len(ch), ("A", "A′")[1], "start")):
-        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) + 1, letter, size=4.5,
+        svg.text(sec.X(c) + (-6 if anchor == "end" else 6), sec.Y(args.z_top) - 4, letter, size=4.5,
                  fill=INK, anchor=anchor)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
