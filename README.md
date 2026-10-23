@@ -88,3 +88,20 @@ Values near:
 The default mesh threshold is:
 
 0.5
+
+## Site drawings (Lockport, MB)
+
+Scaled, data-driven drawings of natural processes at Lockport on the Red
+River, in the spirit of *Architecture of Nature / Nature of Architecture*.
+Sheets are SVG at true paper size (mm) for finishing in Illustrator/Inkscape.
+
+- `drawing/` – shared toolkit: SVG writer and annotation (scale bar, north
+  arrow, flags), Water Survey of Canada loader, season-based time axis.
+- `sheets/` – one script per sheet.
+- `data/lockport/` – where downloaded data goes (see its README).
+
+Sheet 03, hydrograph surface:
+
+python -m sheets.hydrograph_surface --csv data/lockport/daily.csv
+
+Without `--csv` it renders clearly labelled placeholder data.
