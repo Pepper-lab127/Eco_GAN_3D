@@ -30,6 +30,7 @@ import argparse
 import datetime as dt
 import os
 
+import contourpy
 import numpy as np
 from scipy import ndimage
 
@@ -129,6 +130,13 @@ def build(args):
     xs_all, ys_all, edges = [], [], {}
     channel_weight = channel.astype(float).ravel()
 
+    # Riverbed from the chart soundings (sheet 01, 04): where the water is deep,
+    # more of it passes, so part of each day's dots follow depth^(5/3).
+    bed = np.full(a.shape, np.nan)
+    if args.bed and os.path.exists(args.bed):
+        bed = terrain.load_dem(args.bed)[0][r0:r0 + H, c0:c0 + W]
+    above_dam = np.arange(H)[:, None] > dam
+
     def scatter(weight, n):
         if n <= 0 or weight.sum() == 0:
             return
@@ -139,16 +147,24 @@ def build(args):
 
     for d in days:
         wet = water_up | water_down
+        lvl = np.full(a.shape, np.nan)
         for r in reaches:
             level = r["level"][d]
             r_wet = r["water"] if level is None else terrain.flood(floodable, level, r["water"])
             wet = wet | r_wet
+            if level is not None:
+                lvl = np.where(r_wet, level, lvl)
             if d in (start, r["crest"]) and level is not None:
                 edges[(r["name"], d)] = r_wet
         dist = ndimage.distance_transform_edt(wet)         # metres to the nearest dry ground
         weight = np.where(wet & ~barrier, np.exp(-dist / args.front), 0.0).ravel()
         fw = fw_flow.get(d, 0.0)
-        scatter(weight, int(round((flow[d] - fw) * 86400 / args.volume)))
+        n_river = int(round((flow[d] - fw) * 86400 / args.volume))
+        depth = np.where(np.isfinite(bed), lvl - bed, lvl - a)
+        conv = np.where(wet & ~barrier & ~channel & np.isfinite(depth), np.clip(depth, 0, None) ** (5 / 3), 0.0).ravel()
+        n_edge = int(round(n_river * args.edge_share)) if conv.sum() > 0 else n_river
+        scatter(weight, n_edge)
+        scatter(conv, n_river - n_edge)
         # The floodway's share, spread along its bed: its edge was not recorded.
         scatter(channel_weight, int(round(fw * 86400 / args.volume)))
     xs_all, ys_all = np.concatenate(xs_all), np.concatenate(ys_all)
@@ -172,6 +188,7 @@ def build(args):
         frame=f"FRAME · {mm(0.15)}",
         contour=f"PLAN · CONTOURS 1 M · {mm(args.contour)}",
         contour5=f"PLAN · CONTOURS 5 M · {mm(args.contour * 1.6)}",
+        riverbed=f"PLAN · RIVERBED CONTOURS 1 M (CHART), DASHED · {mm(0.06)}",
         bed=f"PLAN · FLOODWAY BED, DOTTED · {mm(0.1)}",
         dots=f"PLAN · DOTS · {mm(args.dot)}",
         first=f"PLAN · FIRST-DAY EDGES, DASHED · {mm(0.08)}",
@@ -204,6 +221,19 @@ def build(args):
         plan("contour5" if index else "contour")
         svg.path(d, fill="none", stroke="#7a7a7a", stroke_width=args.contour * (1.6 if index else 1.0),
                  opacity=0.9 if index else 0.65)
+        svg.close_group()
+
+    # The riverbed from the chart, as dashed contours every metre.
+    if np.isfinite(bed).any():
+        plan("riverbed")
+        for side, ref in ((above_dam, args.bed_ref[0]), (~above_dam, args.bed_ref[1])):
+            z = ndimage.gaussian_filter(np.where(np.isfinite(bed) & side, bed, ref), 2)
+            z = np.where(side, z, np.nan)
+            for lv in np.arange(np.floor(np.nanmin(bed)), ref - 0.5, 1.0):
+                lns = contourpy.contour_generator(z=z, name="serial").lines(lv)
+                svg.path(" ".join(points_to_path(x0 + (ln[::2, 0] + 0.5) * s, y0 + (ln[::2, 1] + 0.5) * s)
+                                  for ln in lns if len(ln) > 8),
+                         fill="none", stroke=INK, stroke_width=0.06, stroke_dasharray="0.8 0.5", opacity=0.6)
         svg.close_group()
 
     # The floodway bed, dotted: where its dots go when its flow is known.
@@ -315,8 +345,11 @@ def build(args):
     notes = [
         f"Each day the water that passed Lockport is drawn as dots, one per {args.volume:,.0f} m³ (a cube about {side} m on a side): "
         f"{n:,} dots for {len(days)} days.",
-        f"Each day's dots gather along that day's water's edges and thin away from them over about {args.front:g} m, "
-        "so the dots pile up where an edge lingered. Dashed lines: the first day's edges; solid lines: each reach's crest.",
+        f"{args.edge_share:.0%} of each day's dots gather along that day's water's edges, thinning over about {args.front:g} m, so they "
+        f"pile up where an edge lingered; the rest fall through the water by depth^5/3, where more of it passes. Dashed lines: "
+        "the first day's edges; solid: each reach's crest.",
+        "Riverbed (fine dashed contours, every metre): depth soundings digitized off a Navionics chart, taken below the summer "
+        "pool (chart datum not stated; not a survey).",
         (f"Above the dam: daily water level recorded at {hydrometric.station_id(args.level_csv)} "
          f"(crest {level_up[crest_up]:.2f} m on {crest_up.strftime('%b %d')})." if not up_est else
          f"Above the dam: ESTIMATED from the daily level at James Avenue ({hydrometric.station_id(args.james_csv)}, Winnipeg) through their relation "
@@ -377,6 +410,10 @@ def main():
     ap.add_argument("--start", default="1997-04-01")
     ap.add_argument("--end", default="1997-06-30")
     ap.add_argument("--volume", type=float, default=100_000, help="m³ of water per dot")
+    ap.add_argument("--bed", default="data/lockport/bathymetry/bed_from_chart.tif")
+    ap.add_argument("--bed-ref", type=float, nargs=2, default=[222.9, 218.2],
+                    help="the bed's reference levels above / below the dam (as in tools/build_bed.py)")
+    ap.add_argument("--edge-share", type=float, default=0.6, help="share of each day's dots placed along the water's edges")
     ap.add_argument("--front", type=float, default=12.0, help="m over which each day's dots thin from the edge")
     ap.add_argument("--dot", type=float, default=0.18, help="dot diameter in mm")
     ap.add_argument("--contour", type=float, default=0.075, help="contour line weight in mm (5 m contours 1.6x)")
