@@ -102,6 +102,15 @@ Sheets are SVG at true paper size (mm) for finishing in Illustrator/Inkscape.
 
 Install: `pip install -r requirements-drawing.txt`
 
+Sheet 01, water motion (estimated velocity on a typical day and the 1997 crest):
+
+python -m sheets.velocity_field
+
+Sheets 04a and 04b, winter and riverbank sections (with key plans and well-log geology):
+
+python -m sheets.winter_section
+python -m sheets.riverbank_section
+
 Sheet 02, calendar cut (1 m lidar terrain flooded with monthly gauge levels):
 
 python -m sheets.calendar_cut
