@@ -4,14 +4,17 @@ A tall section through the wooded east bank of the Red River, on the same
 line as the winter section (about 300 m below St. Andrews Lock and Dam), at
 true scale (no vertical exaggeration):
 
-  - sky: every day's strongest gust recorded at Winnipeg airport 2002-2008
-    (ECCC daily data, gusts over about 31 km/h), each a streak whose length
-    is the gust's west-east component, a dot at its downwind end
-  - riparian wood: canopy heights from the lidar (DSM minus DTM) stippled,
-    trunks at each crown top
-  - roots: a branching DIAGRAM below each trunk, sized from the tree's height
+  - sky: every hour's wind at Winnipeg airport in 2024, each hour a scatter of
+    points along its west-east travel; height in the sky is time
+  - the air at the bank, from the ground up to the sky band: the same hours,
+    thinned where the trees and the bank upwind shelter it (drawing/wind.py)
+  - trees by species, grown to each species' habit and fitted to the lidar's
+    height and crown width; species inferred from how often the ground at
+    each tree floods (drawing/trees.py); roots a diagram by species
   - water: every open-water day's level below the dam (05OJ010, 2002-2008)
-  - lake clay, till and limestone aquifer: awaiting well logs
+  - lake clay, till, shale and carbonate aquifer from two well logs
+  - below: a plan of the year's wind at 2 m around the cut, a wind rose of
+    every hour, and the key plan
 
     python -m sheets.riverbank_section
 """
@@ -22,11 +25,13 @@ import math
 import os
 
 import numpy as np
+from scipy import ndimage
 
-from drawing import climate, geology, hydrometric, terrain
+from drawing import climate, geology, hydrometric, terrain, trees, wind
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile
-from drawing.svg import PAPER, Svg, scale_bar
+from sheets.calendar_cut import true_north_angle
+from drawing.svg import PAPER, Svg, north_arrow, points_to_path, scale_bar
 
 
 INK = "#111111"
@@ -59,6 +64,133 @@ def roots(rng, x, z, depth, spread, level=0, max_level=4):
     return segs
 
 
+def dots(svg, layer, xs, ys, sizes_mm, tier, op, clip=None, streak=None):
+    """Round dots (or short streaks, dx/dy in mm) in one path, optionally blurred."""
+    svg.layer(layer)
+    if clip:
+        svg.open_group(clip_path=clip)
+    if tier:
+        svg.open_group(filter=svg.blur(tier))
+    if streak is None:
+        d = "".join(f"M{x:.2f},{y:.2f}h0" for x, y in zip(xs, ys))
+    else:
+        d = "".join(f"M{x:.2f},{y:.2f}l{a:.2f},{b:.2f}" for x, y, a, b in zip(xs, ys, *streak))
+    svg.path(d, fill="none", stroke=INK, stroke_width=sizes_mm, stroke_linecap="round", opacity=op)
+    if tier:
+        svg.close_group()
+    if clip:
+        svg.close_group()
+
+
+def wind_plan(svg, L, dtm, dsm, hourly, rng, x0, y0, args, tiers, north=0.0):
+    """Plan of the bank around the cut: the year's wind at 2 m above the
+    ground. Each dot is an hour's air, kept in proportion to its local speed
+    (so sheltered ground is sparse), with a short streak downwind as long as
+    that local speed. Returns the plan's width in mm."""
+    r0, r1, c0, c1 = args.wind_window
+    st = args.wind_cell
+    s_ = 1000.0 / args.wind_scale
+    W, H = (c1 - c0) * s_, (r1 - r0) * s_
+    rows, cols = np.mgrid[r0:r1:st, c0:c1:st].astype(float)
+    g = dtm[r0:r1:st, c0:c1:st]
+    can = np.clip(dsm[r0:r1:st, c0:c1:st] - g, 0, None)
+    fields, hsec = wind.sector_fields(dsm, g, can, rows, cols, g + 2.0, hourly)
+    f_ref = float(wind.profile_factor(2.0, 0.0))
+    spd = np.array([h[2] for h in hourly])
+    deg = np.array([h[1] for h in hourly])
+    n = int(W * H * args.plan_density)
+    py = rng.uniform(0, rows.shape[0], n)
+    px = rng.uniform(0, rows.shape[1], n)
+    hrs = rng.choice(len(hourly), n, p=spd / spd.sum())
+    f = np.array([fields[hsec[h]][int(a), int(b)] for h, a, b in zip(hrs, py, px)])
+    acc = rng.random(n) < np.clip(f / f_ref, 0, 1)
+    loc = spd[hrs] * f / f_ref
+    toward = np.radians(deg[hrs] + 180)
+    ln = loc * args.plan_streak
+    sx, sy = np.sin(toward) * ln, -np.cos(toward) * ln
+    X = x0 + px * st * s_
+    Y = y0 + py * st * s_
+    clip = svg.clip_rect(x0, y0, W, H)
+    for (lo, hi, blur, size, op), key in zip(tiers, ("plan_calm", "plan_mid", "plan_strong")):
+        sel = acc & (loc >= lo) & (loc < hi)
+        dots(svg, L[key], X[sel], Y[sel], args.wind_dot * 0.8 * size, blur, op, clip=clip,
+             streak=(sx[sel], sy[sel]))
+    # River, canopy edge, the cut.
+    svg.layer(L["plan_lines"])
+    svg.open_group(clip_path=clip)
+    water = ndimage.binary_opening(g < args.plan_water, iterations=2)
+    lab, nlab = ndimage.label(water)
+    if nlab:
+        water = lab == np.argmax(np.bincount(lab.ravel())[1:]) + 1
+    for ln_ in terrain.mask_lines(water):
+        svg.path(points_to_path(x0 + ln_[:, 0] * st * s_, y0 + ln_[:, 1] * st * s_), fill="none", stroke=INK,
+                 stroke_width=0.12)
+    for ln_ in terrain.smooth_contours(can, [3.0], sigma=1.0)[3.0]:
+        if len(ln_) > 6:
+            svg.path(points_to_path(x0 + ln_[:, 0] * st * s_, y0 + ln_[:, 1] * st * s_), fill="none", stroke=INK,
+                     stroke_width=0.05, opacity=0.6)
+    yc = y0 + (args.row - r0) * s_
+    svg.line(x0 + (args.cols[0] - c0) * s_, yc, x0 + (args.cols[1] - c0) * s_, yc, stroke=INK, stroke_width=0.3,
+             stroke_dasharray="2 0.6 0.4 0.6")
+    svg.close_group()
+    svg.rect(x0, y0, W, H, fill="none", stroke=INK, stroke_width=0.08, opacity=0.6)
+    svg.layer(L["text"])
+    svg.text(x0 + (args.cols[0] - c0) * s_ - 1.5, yc + 0.8, "B", size=2.4, fill=INK, anchor="end")
+    svg.text(x0 + (args.cols[1] - c0) * s_ + 1.5, yc + 0.8, "B′", size=2.4, fill=INK)
+    svg.text(x0, y0 - 2.5, f"WIND AT 2 M · 1:{args.wind_scale:,}", size=2.0, fill=INK, spacing=0.25)
+    svg.layer(L["scale"])
+    scale_bar(svg, x0, y0 + H + 3, 100 * s_, 100, "m", color=INK)
+    north_arrow(svg, x0 + 100 * s_ + 12, y0 + H + 3.5, r=2.5, color=INK, angle=north)
+    return W
+
+
+def wind_rose(svg, L, hourly, cx, cy, R, rng, tiers, north=0.0):
+    """Every hour as a dot in a petal pointing to where its wind came from.
+    A petal's length is its share of the hours (R mm = the busiest sector);
+    within a petal the hours run from the calmest at the centre to the
+    strongest at the tip, crisp to blurred as in the sky."""
+    deg = np.array([h[1] for h in hourly])
+    spd = np.array([h[2] for h in hourly])
+    sec = wind.sector_of(deg).astype(int)
+    counts = np.bincount(sec, minlength=wind.SECTORS)
+    xs, ys, ss = [], [], []
+    for k in range(wind.SECTORS):
+        idx = np.nonzero(sec == k)[0]
+        if not len(idx):
+            continue
+        idx = idx[np.argsort(spd[idx])]
+        length = counts[k] / counts.max() * R
+        r = (np.arange(len(idx)) + rng.random(len(idx))) / len(idx) * length
+        half = math.radians(360 / wind.SECTORS / 2) * 0.8
+        a = math.radians(k * 360 / wind.SECTORS + north) + rng.uniform(-half, half, len(idx)) * np.clip(r / 6, 0.2, 1)
+        xs.append(cx + np.sin(a) * r)
+        ys.append(cy - np.cos(a) * r)
+        ss.append(spd[idx])
+    X, Y, S = np.concatenate(xs), np.concatenate(ys), np.concatenate(ss)
+    svg.layer(L["rose_lines"])
+    for pct in (5, 10, 15):
+        rr = pct / 100 / (counts.max() / counts.sum()) * R
+        if rr <= R * 1.05:
+            svg.circle(cx, cy, rr, fill="none", stroke=INK, stroke_width=0.04, opacity=0.5, stroke_dasharray="0.3 0.6")
+    for ang in range(0, 360, 90):
+        t = math.radians(ang + north)
+        svg.line(cx, cy, cx + math.sin(t) * R * 1.05, cy - math.cos(t) * R * 1.05, stroke=INK, stroke_width=0.04,
+                 opacity=0.5)
+    for (lo, hi, blur, size, op), key in zip(tiers, ("rose_calm", "rose_mid", "rose_strong")):
+        sel = (S >= lo) & (S < hi)
+        dots(svg, L[key], X[sel], Y[sel], 0.12 * size, blur, op)
+    svg.layer(L["text"])
+    for pct in (5, 10, 15):
+        rr = pct / 100 / (counts.max() / counts.sum()) * R
+        if rr <= R * 1.05:
+            svg.text(cx + 0.8, cy - rr - 0.6, f"{pct}%", size=1.4, fill=INK, opacity=0.6)
+    for lab_, ang in (("N", 0), ("E", 90), ("S", 180), ("W", 270)):
+        t = math.radians(ang + north)
+        svg.text(cx + math.sin(t) * R * 1.14, cy - math.cos(t) * R * 1.14 + 0.8, lab_, size=2.0, fill=INK, anchor="middle")
+    svg.text(cx, cy + R + 8, f"WIND ROSE · {len(hourly):,} HOURS · % OF HOURS", size=1.6, fill=INK, anchor="middle",
+             spacing=0.2, opacity=0.8)
+
+
 def build(args):
     dtm, key_transform, key_crs = terrain.load_dem(args.dem)
     dsm, _, _ = terrain.load_dem(args.dsm)
@@ -77,8 +209,13 @@ def build(args):
              geo_shale="GEOLOGY · SHALE, PARTINGS · 0.08 mm", geo_carbonate="GEOLOGY · CARBONATE, BEDS, JOINTS, VUGS · 0.08 mm",
              wind="SKY · CALMER HOURS, CRISP · 0.12 mm", wind_mid="SKY · WINDIER HOURS, SOFT BLUR",
              wind_strong="SKY · STRONGEST HOURS, BLURRED",
+             plan_lines="WIND PLAN · RIVER, CANOPY EDGE, CUT · 0.05–0.3 mm", plan_calm="WIND PLAN · CALMER, CRISP · 0.1 mm",
+             plan_mid="WIND PLAN · WINDIER, SOFT BLUR", plan_strong="WIND PLAN · STRONGEST, BLURRED",
+             rose_lines="WIND ROSE · RINGS · 0.04 mm", rose_calm="WIND ROSE · CALMER HOURS, CRISP · 0.12 mm",
+             rose_mid="WIND ROSE · WINDIER HOURS, SOFT BLUR", rose_strong="WIND ROSE · STRONGEST HOURS, BLURRED",
              water="WATER LEVELS · 0.05 mm", flood="1997 CREST (EST.), DASHED · 0.12 mm",
-             canopy="CANOPY STIPPLE (LIDAR) · 0.2 mm", trunks="TRUNKS · 0.25 mm",
+             canopy="CANOPY SURFACE (LIDAR), DOTTED · 0.06 mm", tree_wood="TREES · TRUNKS AND LIMBS, FILLED",
+             tree_twigs="TREES · TWIGS · 0.04–0.06 mm", tree_leaves="TREES · LEAVES, STIPPLE · 0.15–0.22 mm",
              roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
              key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BAR", text="TEXT")
@@ -132,10 +269,39 @@ def build(args):
     zs_pts = np.concatenate(zs_pts)
     sp_pts = np.concatenate(sp_pts)
     keep = (zs_pts > ground_top + 1) & (zs_pts < args.z_top)
-    clip = svg.clip_rect(sec.X(0), sec.Y(args.z_top), width * sec.sh, (args.z_top - args.z_bottom) * sec.sv)
-    # Tiers by wind speed: calm hours crisp, the strongest hours blurred into haze.
     all_speeds = np.array([g[2] for g in gusts])
     cuts = np.percentile(all_speeds, args.blur_tiers)
+
+    # The air at the bank, from the ground up to the sky band: the same hours,
+    # slowed by the trees and the bank upwind of each point along each hour's
+    # direction (drawing/wind.py, a screening model). A point is kept in
+    # proportion to the hour's local speed, so sheltered air thins out.
+    if hourly:
+        sky_density = keep.sum() / (width * (sky_hi - sky_lo))
+        hz = np.arange(float(np.nanmin(ground)), sky_lo + 0.25, 0.5)
+        X_, Z_ = np.meshgrid(np.arange(width) + 0.5, hz)
+        g_at = np.interp(X_, ch + 0.5, ground)
+        can = np.nan_to_num(height)
+        c_at = np.interp(X_, ch + 0.5, can)
+        fields, hsec = wind.sector_fields(dsm, g_at, c_at, np.full_like(X_, args.row, dtype=float),
+                                          args.cols[0] + X_, Z_, gusts)
+        f_ref = float(wind.profile_factor(sky_lo - float(np.nanmin(ground)), 0.0))
+        spd_h = all_speeds
+        n_cand = int(sky_density * width * (sky_lo - float(np.nanmin(ground))) * args.near_density)
+        x_c = rng.uniform(0, width, n_cand)
+        z_c = rng.uniform(float(np.nanmin(ground)), sky_lo, n_cand)
+        above_ground = z_c > np.interp(x_c, ch + 0.5, ground)
+        hrs = rng.choice(len(gusts), n_cand, p=spd_h / spd_h.sum())
+        ix = np.clip(x_c.astype(int), 0, width - 1)
+        iz = np.clip(np.round((z_c - hz[0]) / 0.5).astype(int), 0, len(hz) - 1)
+        f_c = np.array([fields[hsec[h]][a, b] for h, a, b in zip(hrs, iz, ix)])
+        acc = above_ground & (rng.random(n_cand) < np.clip(f_c / f_ref, 0, 1))
+        xs_pts = np.concatenate([xs_pts, x_c[acc]])
+        zs_pts = np.concatenate([zs_pts, z_c[acc]])
+        sp_pts = np.concatenate([sp_pts, spd_h[hrs[acc]] * f_c[acc] / f_ref])
+        keep = np.concatenate([keep, np.ones(acc.sum(), bool)])
+    clip = svg.clip_rect(sec.X(0), sec.Y(args.z_top), width * sec.sh, (args.z_top - args.z_bottom) * sec.sv)
+    # Tiers by wind speed: calm hours crisp, the strongest hours blurred into haze.
     # Blurred points are drawn larger and darker, since blurring spreads their ink.
     tiers = [(0, cuts[0], 0.0, 1.0, 0.75), (cuts[0], cuts[1], args.blur[0], 2.4, 0.9),
              (cuts[1], np.inf, args.blur[1], 4.5, 1.0)]
@@ -167,30 +333,35 @@ def build(args):
     svg.layer(L["flood"])
     svg.line(sec.X(0), sec.Y(z97), sec.X(edge), sec.Y(z97), stroke=INK, stroke_width=0.12, stroke_dasharray="1 0.8")
 
-    # Canopy: stipple between crown base and the lidar surface; trunks at crown tops.
+    # Trees by species, each grown to its habit and fitted to its lidar height
+    # and crown width; species inferred from how often its ground floods.
     tops = crown_tops(height, args.min_tree, args.tree_spacing)
-    pts = []
-    for i in range(width):
-        h = height[i]
-        if not h == h:
-            continue
-        base = ground[i] + h * args.crown_base
-        n = int(max(0, top[i] - base) * args.stipple)
-        for _ in range(n):
-            pts.append((i + rng.random(), rng.uniform(base, top[i])))
+    levels = np.array([z for _, z in open_days])
+    tree_rng = np.random.default_rng(args.seed + 7)
+    placed = []
+    for i in tops:
+        lo_, hi_ = i, i
+        while lo_ > 0 and np.nan_to_num(height[lo_ - 1]) >= 0.55 * height[i]:
+            lo_ -= 1
+        while hi_ < width - 1 and np.nan_to_num(height[hi_ + 1]) >= 0.55 * height[i]:
+            hi_ += 1
+        crown_m = max(4.0, min(hi_ - lo_ + 1.0, height[i] * 0.9))
+        share = float((levels >= ground[i]).mean())
+        sp = trees.zone_species(share, ground[i] > z97, tree_rng)
+        placed.append((i, sp, share, crown_m))
+        trees.draw(svg, dict(wood=L["tree_wood"], twigs=L["tree_twigs"], leaves=L["tree_leaves"]), sp,
+                   sec.X(i + 0.5), sec.Y(ground[i]), height[i] * sec.sv, crown_m * sec.sh, tree_rng, ink=INK)
+    # The lidar's canopy surface, as measured: a fine dotted line over the drawn trees.
     svg.layer(L["canopy"])
-    svg.path("".join(f"M{sec.X(x):.2f},{sec.Y(z):.2f}h0" for x, z in pts), fill="none", stroke=INK,
-             stroke_width=0.2, stroke_linecap="round", opacity=0.75)
-    svg.layer(L["trunks"])
-    for i in tops:
-        svg.line(sec.X(i + 0.5), sec.Y(ground[i]), sec.X(i + 0.5), sec.Y(ground[i] + height[i] * 0.85),
-                 stroke=INK, stroke_width=0.25)
+    svg.path(sec.path(ch, np.where(np.isfinite(height), top, np.nan)), fill="none", stroke=INK, stroke_width=0.06,
+             stroke_dasharray="0.15 0.6", stroke_linecap="round", opacity=0.7)
 
-    # Roots: diagram, depth and spread from each tree's height.
+    # Roots: diagram, depth and spread from each tree's height and species.
     svg.layer(L["roots"])
-    for i in tops:
-        for x0_, z0_, x1_, z1_, lvl in roots(rng, i + 0.5, ground[i], min(3.0, height[i] * 0.15),
-                                             height[i] * 0.45):
+    for i, sp, _, _ in placed:
+        dmul, smul = trees.SPECIES[sp]["root"]
+        for x0_, z0_, x1_, z1_, lvl in roots(rng, i + 0.5, ground[i], min(3.5, height[i] * 0.15 * dmul),
+                                             height[i] * 0.45 * smul):
             svg.line(sec.X(x0_), sec.Y(z0_), sec.X(x1_), sec.Y(z1_), stroke=INK,
                      stroke_width=round(0.2 * 0.6 ** lvl, 3), opacity=0.8)
 
@@ -203,10 +374,10 @@ def build(args):
     svg.text(sec.X(3), sec.Y(z_med) - 1.5, f"OPEN WATER, MAY–OCT {dl[0].year}–{dl[-1].year} · MEDIAN +{z_med:.2f}",
              size=1.8, fill=INK)
     svg.text(sec.X(3), sec.Y(z97) - 1.5, f"1997 CREST, EST. +{z97:.2f} (±{rmse:.1f} M)", size=1.8, fill=INK)
-    if tops:
-        tallest = max(tops, key=lambda i: height[i])
-        svg.text(sec.X(tallest + 2), sec.Y(top[tallest]) - 2, f"CANOPY {height[tallest]:.1f} M (LIDAR)", size=1.8, fill=INK)
-        svg.text(sec.X(tallest + 2), sec.Y(ground[tallest] - 2.5), "ROOTS · DIAGRAM", size=1.8, fill=INK)
+    # Species names stand upright above each crown, clear of their neighbours.
+    for i, sp, share, _ in placed:
+        svg.text(sec.X(i + 0.5) + 0.5, sec.Y(top[i] + 1.5), f"{trees.SPECIES[sp]['name']} · {height[i]:.0f} M",
+                 size=1.5, fill=INK, spacing=0.15, opacity=0.85, rotate=-90)
     if hourly:
         svg.text(sec.X(width / 2), sec.Y(args.z_top - 3), f"SKY · {len(gusts):,} HOURS OF WIND, "
                  f"{t0.strftime('%b %d %Y').upper()} – {t1.strftime('%b %d %Y').upper()}", size=2.0, fill=INK,
@@ -271,14 +442,30 @@ def build(args):
     svg.layer(L["scale"])
     scale_bar(svg, sec.x0, Hp - m - 9, 20 * sec.sh, 20, "m", color=INK)
 
+    if hourly:
+        tiers_ = [(0, cuts[0], 0.0, 1.0, 0.75), (cuts[0], cuts[1], args.blur[0], 2.4, 0.9),
+                  (cuts[1], np.inf, args.blur[1], 4.5, 1.0)]
+        px0, py0 = sec.x0, sec.Y(args.z_bottom) + 24
+        north_ = true_north_angle(key_transform, key_crs, args.row, sum(args.cols) / 2)
+        pw_ = wind_plan(svg, L, dtm, dsm, gusts, rng, px0, py0, args, tiers_, north=north_)
+        wind_rose(svg, L, gusts, px0 + pw_ + 18 + args.rose_r, py0 + args.rose_r + 4, args.rose_r, rng, tiers_,
+                  north=north_)
+
     # Key plan: where the section is cut. The other section's line is dashed.
-    from sheets.calendar_cut import true_north_angle
     kw = args.key_window
     kx, ky = Wp - m - 122, Hp - m - 125
     key_plan(svg, dtm, kx, ky, kw, args.row, args.cols, args.dam_row, args.dam_cols, INK,
              scale=args.key_scale, angle=true_north_angle(key_transform, key_crs, (kw[0] + kw[1]) / 2, (kw[2] + kw[3]) / 2),
              other_cuts=[(1840, (1150, 1850))], layers=dict(lines=L["key_lines"], cut=L["key_cut"], text=L["text"]),
              label=("B", "B′"), names=[("DAM", 2105, 1700, 0), ("LOCK", 2240, 1200, -90), ("FLOODWAY", 2700, 2470, -90), ("RED RIVER", 2700, 1250, -60)])
+    if hourly:
+        ks = 1000.0 / args.key_scale
+        wr0, wr1, wc0, wc1 = args.wind_window
+        svg.layer(L["key_lines"])
+        svg.rect(kx + (wc0 - kw[2]) * ks, ky + (wr0 - kw[0]) * ks, (wc1 - wc0) * ks, (wr1 - wr0) * ks, fill="none",
+                 stroke=INK, stroke_width=0.08, stroke_dasharray="0.5 0.5")
+        svg.layer(L["text"])
+        svg.text(kx + (wc1 - kw[2]) * ks + 1, ky + (wr0 - kw[0]) * ks + 1.6, "WIND PLAN", size=1.3, fill=INK, opacity=0.8)
     # The cut's letters at both ends of the section.
     svg.layer(L["text"])
     for c, letter, anchor in ((0, ("B", "B′")[0], "end"), (len(ch), ("B", "B′")[1], "start")):
@@ -287,7 +474,8 @@ def build(args):
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     svg.save(args.out)
-    print(f"wrote {args.out}  ({len(gusts)} {'hours' if hourly else 'gust days'}, {len(tops)} trees, {len(pts)} canopy dots, "
+    print("trees:", [(i, sp, round(sh, 3)) for i, sp, sh, _ in placed])
+    print(f"wrote {args.out}  ({len(gusts)} {'hours' if hourly else 'gust days'}, {len(tops)} trees, "
           f"{len(open_days)} water days, 1997 est {z97:.2f})")
 
 
@@ -314,6 +502,16 @@ def main():
     ap.add_argument("--blur-tiers", type=float, nargs=2, default=[60, 90],
                     help="wind-speed percentiles where blurring starts and strengthens")
     ap.add_argument("--blur", type=float, nargs=2, default=[0.25, 0.7], help="blur (mm) of the two windier tiers")
+    ap.add_argument("--near-density", type=float, default=1.6,
+                    help="density of the bank's air points relative to the sky band")
+    ap.add_argument("--wind-window", type=int, nargs=4, default=[1640, 2040, 1260, 2060],
+                    metavar=("ROW0", "ROW1", "COL0", "COL1"), help="DEM area of the wind plan")
+    ap.add_argument("--wind-cell", type=int, default=2, help="m per cell of the wind plan model")
+    ap.add_argument("--wind-scale", type=int, default=2500)
+    ap.add_argument("--plan-density", type=float, default=0.9, help="candidate wind-plan dots per mm²")
+    ap.add_argument("--plan-streak", type=float, default=0.045, help="mm of streak per km/h in the wind plan")
+    ap.add_argument("--plan-water", type=float, default=218.4, help="lidar ground below this is river in the wind plan")
+    ap.add_argument("--rose-r", type=float, default=34.0, help="wind rose radius (40 km/h), mm")
     ap.add_argument("--min-tree", type=float, default=6.0, help="m canopy height counted as a tree top")
     ap.add_argument("--tree-spacing", type=int, default=6, help="m between tree tops")
     ap.add_argument("--crown-base", type=float, default=0.4, help="crown base as a share of tree height")
