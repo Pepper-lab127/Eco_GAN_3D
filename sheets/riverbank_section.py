@@ -27,7 +27,7 @@ import os
 import numpy as np
 from scipy import ndimage
 
-from drawing import climate, geology, hydrometric, terrain, trees, wind
+from drawing import climate, flora, geology, hydrometric, terrain, trees, wind
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile
 from sheets.calendar_cut import true_north_angle
@@ -191,6 +191,43 @@ def wind_rose(svg, L, hourly, cx, cy, R, rng, tiers, north=0.0):
              spacing=0.2, opacity=0.8)
 
 
+def flora_band(svg, L, sec, placed, moisture, light, lo, hi, args):
+    """Below the section: each stretch of the bank by moisture and light, with
+    the plants of the Lockport list placed there."""
+    by_x = sorted((x, k) for k, xs in placed.items() for x in xs)
+    zones = []
+    start = lo
+    for i in range(lo + 1, hi + 1):
+        if i == hi or (moisture[i], light[i]) != (moisture[start], light[start]):
+            zones.append([start, i, moisture[start], light[start]])
+            start = i
+    # Fold stretches shorter than a few metres into the one before.
+    merged = []
+    for a, b, m, l in zones:
+        if merged and b - a < args.min_zone:
+            merged[-1][1] = b
+            merged[-1][2].add(m)
+            merged[-1][3].add(l)
+        else:
+            merged.append([a, b, {m}, {l}])
+    names = {r["Scientific Name"]: r["Common Name"] for r in flora.load_list(args.flora_csv).values()}
+    y = sec.Y(args.z_bottom) + 6
+    for k, (a, b, m, l) in enumerate(merged):
+        here = sorted({names.get(sp, sp) for x, sp in by_x if a <= x < b})
+        if not here:
+            continue
+        xa, xb = sec.X(a) + 0.4, sec.X(b) - 0.4
+        svg.layer(L["flora_band"])
+        svg.path(f"M{xa:.2f},{y - 1.2:.2f}V{y:.2f}H{xb:.2f}V{y - 1.2:.2f}", fill="none", stroke=INK, stroke_width=0.08)
+        svg.layer(L["text"])
+        order_m = [c for c in ("wet", "moist", "dry") if c in m]
+        order_l = [c for c in ("sun", "part", "shade") if c in l]
+        sun = " / ".join(dict(sun="FULL SUN", part="PART SHADE", shade="SHADE")[c] for c in order_l)
+        svg.text(xa, y + 2.6, f"{' / '.join(c.upper() for c in order_m)} · {sun}", size=1.4, fill=INK, spacing=0.15)
+        for j, nm in enumerate(here):
+            svg.text(xa, y + 5.0 + 2.0 * j, nm.upper(), size=1.3, fill=INK, spacing=0.1, opacity=0.8)
+
+
 def build(args):
     dtm, key_transform, key_crs = terrain.load_dem(args.dem)
     dsm, _, _ = terrain.load_dem(args.dsm)
@@ -215,7 +252,10 @@ def build(args):
              rose_mid="WIND ROSE · WINDIER HOURS, SOFT BLUR", rose_strong="WIND ROSE · STRONGEST HOURS, BLURRED",
              water="WATER LEVELS · 0.05 mm", flood="1997 CREST (EST.), DASHED · 0.12 mm",
              canopy="CANOPY SURFACE (LIDAR), DOTTED · 0.06 mm", tree_wood="TREES · TRUNKS AND LIMBS, FILLED",
-             tree_twigs="TREES · TWIGS · 0.04–0.06 mm", tree_leaves="TREES · LEAVES, STIPPLE · 0.15–0.22 mm",
+             tree_twigs="TREES · TWIGS · 0.04–0.06 mm",
+             flora_stems="GROUND LAYER · STEMS AND BLADES · 0.05 mm",
+             flora_leaves="GROUND LAYER · LEAVES, FLOWERS, BERRIES · 0.1–0.25 mm",
+             flora_band="GROUND LAYER · ZONES BELOW THE SECTION · 0.08 mm", tree_leaves="TREES · LEAVES, STIPPLE · 0.15–0.22 mm",
              roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
              key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BAR", text="TEXT")
@@ -347,7 +387,8 @@ def build(args):
             hi_ += 1
         crown_m = max(4.0, min(hi_ - lo_ + 1.0, height[i] * 0.9))
         share = float((levels >= ground[i]).mean())
-        sp = trees.zone_species(share, ground[i] > z97, tree_rng)
+        near = np.nan_to_num(height[max(0, i - args.edge_m):i + args.edge_m + 1])
+        sp = trees.zone_species(share, ground[i] > z97, bool((near < 3).any()), tree_rng)
         placed.append((i, sp, share, crown_m))
         trees.draw(svg, dict(wood=L["tree_wood"], twigs=L["tree_twigs"], leaves=L["tree_leaves"]), sp,
                    sec.X(i + 0.5), sec.Y(ground[i]), height[i] * sec.sv, crown_m * sec.sh, tree_rng, ink=INK)
@@ -355,6 +396,16 @@ def build(args):
     svg.layer(L["canopy"])
     svg.path(sec.path(ch, np.where(np.isfinite(height), top, np.nan)), fill="none", stroke=INK, stroke_width=0.06,
              stroke_dasharray="0.15 0.6", stroke_linecap="round", opacity=0.7)
+
+    # The ground layer: shrubs, wildflowers and grasses of the Lockport list,
+    # each where its habitat and sun preferences meet the bank's moisture
+    # (flood record) and light (lidar canopy overhead).
+    moisture, light = flora.classes(ground, height, levels, z97)
+    shore = int(np.argmax(ground > np.median(levels)))
+    flora_placed = flora.plant_bank(svg, dict(stems=L["flora_stems"], leaves=L["flora_leaves"]), sec, ch + 0.5,
+                                    ground, moisture, light, np.random.default_rng(args.seed + 11), lo=shore,
+                                    spacing=args.flora_spacing, shrub_every=args.shrub_every, ink=INK)
+    flora_band(svg, L, sec, flora_placed, moisture, light, shore, width, args)
 
     # Roots: diagram, depth and spread from each tree's height and species.
     svg.layer(L["roots"])
@@ -445,7 +496,7 @@ def build(args):
     if hourly:
         tiers_ = [(0, cuts[0], 0.0, 1.0, 0.75), (cuts[0], cuts[1], args.blur[0], 2.4, 0.9),
                   (cuts[1], np.inf, args.blur[1], 4.5, 1.0)]
-        px0, py0 = sec.x0, sec.Y(args.z_bottom) + 24
+        px0, py0 = sec.x0, sec.Y(args.z_bottom) + 32
         north_ = true_north_angle(key_transform, key_crs, args.row, sum(args.cols) / 2)
         pw_ = wind_plan(svg, L, dtm, dsm, gusts, rng, px0, py0, args, tiers_, north=north_)
         wind_rose(svg, L, gusts, px0 + pw_ + 18 + args.rose_r, py0 + args.rose_r + 4, args.rose_r, rng, tiers_,
@@ -512,6 +563,11 @@ def main():
     ap.add_argument("--plan-streak", type=float, default=0.045, help="mm of streak per km/h in the wind plan")
     ap.add_argument("--plan-water", type=float, default=218.4, help="lidar ground below this is river in the wind plan")
     ap.add_argument("--rose-r", type=float, default=34.0, help="wind rose radius (40 km/h), mm")
+    ap.add_argument("--flora-csv", default="data/lockport/ecology/lockport_flora.csv")
+    ap.add_argument("--flora-spacing", type=float, default=0.3, help="m between ground-layer plants")
+    ap.add_argument("--shrub-every", type=float, default=4.0, help="m between shrubs where they grow")
+    ap.add_argument("--edge-m", type=int, default=6, help="m of open ground that makes a tree a woodland-margin tree")
+    ap.add_argument("--min-zone", type=int, default=5, help="m; shorter zone stretches fold into their neighbour")
     ap.add_argument("--min-tree", type=float, default=6.0, help="m canopy height counted as a tree top")
     ap.add_argument("--tree-spacing", type=int, default=6, help="m between tree tops")
     ap.add_argument("--crown-base", type=float, default=0.4, help="crown base as a share of tree height")

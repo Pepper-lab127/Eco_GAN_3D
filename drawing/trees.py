@@ -6,11 +6,11 @@ are, how its leaves gather) and then fitted to the tree measured by the lidar:
 its height and its crown width. Trunk and limbs are filled, tapering by the
 pipe model; leaves are stippled at the twig ends.
 
-Species are INFERRED, not observed: each tree takes the species of its zone
-on the bank, set by how often the ground at its base was under water
-(Red River floodplain forest zonation: willow and cottonwood on the wettest
-ground, then Manitoba maple, green ash and American elm, with bur oak and
-basswood above the floods).
+Species come from the Lockport plant list (data/lockport/ecology/
+lockport_flora.csv); which tree is which is placed by that list's habitat
+preferences against how often the ground at its base is under water and
+whether it stands at the woodland margin (see zone_species). Other species
+here (willow, cottonwood, ash, basswood) are kept for other sites.
 """
 
 import math
@@ -34,21 +34,28 @@ SPECIES = {
                 ratio=0.76, depth=8, droop=0.18, crook=0.05, twig=1.0, leaf=(9, 0.035, 0.14), root=(0.7, 1.5)),
     "oak": dict(name="BUR OAK", latin="Quercus macrocarpa", trunk=0.34, leaders=3, spread=0.9, angle=0.95,
                 ratio=0.66, depth=7, droop=0.0, crook=0.35, twig=0.6, leaf=(18, 0.05, 0.18), root=(1.3, 1.0)),
+    "aspen": dict(name="TREMBLING ASPEN", latin="Populus tremuloides", trunk=0.55, leaders=1, spread=0.0, angle=0.55,
+                  ratio=0.6, depth=6, droop=0.0, crook=0.07, twig=0.6, leaf=(11, 0.03, 0.14), root=(0.6, 1.4),
+                  excurrent=True, pale_bark=True),
     "basswood": dict(name="BASSWOOD", latin="Tilia americana", trunk=0.9, leaders=1, spread=0.0, angle=0.85,
                      ratio=0.62, depth=7, droop=0.08, crook=0.04, twig=0.7, leaf=(16, 0.045, 0.19), root=(1.0, 1.0),
                      excurrent=True),
 }
 
 
-def zone_species(flood_share, above_crest, rng):
-    """Species for a tree whose base floods on `flood_share` of open-water days."""
-    if flood_share > 0.10:
-        return "willow"
+def zone_species(flood_share, above_crest, at_edge, rng):
+    """Species for a tree, from the Lockport plant list (data/lockport/ecology/
+    lockport_flora.csv) and its habitat preferences: Manitoba maple on
+    floodplains (ground the open-water levels reach), American elm on the
+    riverbank below the 1997 crest, bur oak on the well-drained ground above
+    it, trembling aspen at the woodland margin."""
     if flood_share > 0.0:
-        return rng.choice(["cottonwood", "cottonwood", "maple"])
+        return "maple"
     if not above_crest:
-        return rng.choice(["ash", "elm", "ash"])
-    return rng.choice(["oak", "basswood", "oak"])
+        return "elm"
+    if at_edge:
+        return "aspen"
+    return "oak"
 
 
 def grow(sp, rng):
@@ -61,6 +68,7 @@ def grow(sp, rng):
         steps = 3
         for k in range(steps):
             ang += rng.normal(0, p["crook"]) + p["droop"] * order * 0.12 * math.sin(ang)
+            ang = max(-1.75, min(1.75, ang))                 # limbs never turn back into the ground
             x2 = x + math.sin(ang) * length / steps
             y2 = y + math.cos(ang) * length / steps
             segs.append((x, y, x2, y2, order, depth == 0 and k == steps - 1))
@@ -132,7 +140,22 @@ def draw(svg, layers, sp, x_mm, y_ground_mm, height_mm, crown_w_mm, rng, ink="#1
         w1 = w0 * 0.88
         polys.append(f"M{ax + nx * w0 / 2:.2f},{ay + ny * w0 / 2:.2f}L{bx + nx * w1 / 2:.2f},{by + ny * w1 / 2:.2f}"
                      f"L{bx - nx * w1 / 2:.2f},{by - ny * w1 / 2:.2f}L{ax - nx * w0 / 2:.2f},{ay - ny * w0 / 2:.2f}Z")
-    svg.path("".join(polys), fill=ink, stroke="none")
+    if p.get("pale_bark"):
+        svg.path("".join(polys), fill="#ffffff", stroke=ink, stroke_width=0.06)
+        marks = []
+        for x0, y0, x1, y1, order, tip in segs:
+            w0 = width[order]
+            if w0 < 0.4:
+                continue
+            ax, ay = P(x0, y0)
+            bx, by = P(x1, y1)
+            for t in rng.uniform(0, 1, int(math.hypot(bx - ax, by - ay) / 1.2) + 1):
+                mx, my = ax + (bx - ax) * t, ay + (by - ay) * t
+                ln = w0 * rng.uniform(0.3, 0.7)
+                marks.append(f"M{mx - ln / 2:.2f},{my:.2f}h{ln:.2f}")
+        svg.path("".join(marks), fill="none", stroke=ink, stroke_width=0.12, stroke_linecap="round")
+    else:
+        svg.path("".join(polys), fill=ink, stroke="none")
     svg.layer(layers["twigs"])
     twigs = []
     for x0, y0, x1, y1, order, tip in segs:
