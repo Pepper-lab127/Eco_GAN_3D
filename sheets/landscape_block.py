@@ -209,7 +209,7 @@ def build(args):
     small_scale = args.small_scale
     sw = (c1 - c0) * 1000.0 / small_scale
     row_w = sw * (1 + 0.45)
-    gap = (Wp - 2 * m - args.left_col - 3 * row_w) / 2
+    gap = (Wp - 3 * row_w) / 4                 # equal spaces between the blocks and to the page edges
     stages = [
         ("1", "ABOUT 450 MILLION YEARS AGO · A SHALLOW SEA LAYS DOWN LIME MUD", carb_top, "sea"),
         ("2", "THE LAST GLACIATION, TO ABOUT 12,000 YEARS AGO · ICE FLOWS SOUTH, SPREADING TILL", till_top, "ice"),
@@ -218,7 +218,7 @@ def build(args):
     zb_small = args.z_bottom
     label_y = args.stage_base + args.stage_label_gap
     for k, (num, text, top_surface, above) in enumerate(stages):
-        bx = m + args.left_col + k * (row_w + gap)
+        bx = gap + k * (row_w + gap)
         blk = Block(args.window, small_scale, args.ve, zb_small, bx, args.stage_base)
         surface(svg, None, L["surf"], blk, top_surface, args.small_rows, line_w=0.05)
         faces(svg, L, blk, plain, top_surface, args.z_top, label=False, seed=10 + k)
@@ -302,9 +302,9 @@ def main():
     ap.add_argument("--left-col", type=float, default=96.0, help="mm of label column left of the large block")
     ap.add_argument("--left-wrap", type=int, default=44, help="characters per line, left labels")
     ap.add_argument("--stage-wrap", type=int, default=46, help="characters per line, stage labels")
-    ap.add_argument("--stage-base", type=float, default=548.0, help="mm: front-bottom edge of the stage blocks")
+    ap.add_argument("--stage-base", type=float, default=545.0, help="mm: front-bottom edge of the stage blocks")
     ap.add_argument("--stage-label-gap", type=float, default=12.0, help="mm from the stage blocks to their labels")
-    ap.add_argument("--big-base", type=float, default=410.0, help="mm: front-bottom edge of the large block")
+    ap.add_argument("--big-base", type=float, default=362.0, help="mm: front-bottom edge of the large block")
     ap.add_argument("--rows-step", type=int, default=8, help="m between surface profiles (large block)")
     ap.add_argument("--small-rows", type=int, default=30)
     ap.add_argument("--fill-m", type=int, default=400, help="m width bridged when filling the valley")
