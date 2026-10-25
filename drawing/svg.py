@@ -142,7 +142,7 @@ class Svg:
             f"{escape(str(s))}</text>"
         )
 
-    def save(self, path):
+    def save(self, path, slim=True):
         head = (
             '<svg xmlns="http://www.w3.org/2000/svg" '
             'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
@@ -166,6 +166,13 @@ class Svg:
                 f.write("\n".join(items))
                 f.write("\n</g>")
             f.write("</svg>\n")
+        if slim:
+            # Fewer anchors and shorter numbers for Illustrator; nothing that prints changes.
+            from tools.slim_svg import slim as _slim
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(_slim(text)[0])
 
 
 # ---------------------------------------------------------------------------
