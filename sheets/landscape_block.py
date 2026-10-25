@@ -197,28 +197,29 @@ def build(args):
         svg.layer(L["leaders"])
         if side == "left":                         # label at left, target to its right
             svg.line(col_x + longest + 2.0, ty, tx - 1.0, ty, stroke=INK, stroke_width=0.06)
-        else:                                      # label at right, target to its left
+        elif side == "right":                      # label at right, target to its left
             svg.line(tx + 1.0, ty, col_x - 2.0, ty, stroke=INK, stroke_width=0.06)
-        svg.circle(tx, ty, 0.35, fill=INK, stroke="none")
+        if side != "below":
+            svg.circle(tx, ty, 0.35, fill=INK, stroke="none")
 
     s_big = 1000.0 / args.scale
-    big_h = (float(np.nanmax(g)) - args.z_bottom) * s_big * args.ve + 0.25 * (r1 - r0) * s_big
-    big = Block(args.window, args.scale, args.ve, args.z_bottom, m + args.left_col, Hp / 2 + big_h / 2)
+    big = Block(args.window, args.scale, args.ve, args.z_bottom, m + args.left_col, args.big_base)
 
     # ------------------------------------------------------------ the three stages
     small_scale = args.small_scale
     sw = (c1 - c0) * 1000.0 / small_scale
-    sx = Wp - m - args.right_col - 8 - sw * (1 + 0.45)
+    row_w = sw * (1 + 0.45)
+    gap = (Wp - 2 * m - args.left_col - 3 * row_w) / 2
     stages = [
         ("1", "ABOUT 450 MILLION YEARS AGO · A SHALLOW SEA LAYS DOWN LIME MUD", carb_top, "sea"),
         ("2", "THE LAST GLACIATION, TO ABOUT 12,000 YEARS AGO · ICE FLOWS SOUTH, SPREADING TILL", till_top, "ice"),
         ("3", "ABOUT 12,000–8,000 YEARS AGO · LAKE AGASSIZ SETTLES CLAY OVER THE TILL", plain, "lake"),
     ]
     zb_small = args.z_bottom
-    right_x = Wp - m - args.right_col
+    label_y = args.stage_base + args.stage_label_gap
     for k, (num, text, top_surface, above) in enumerate(stages):
-        stage_y = args.stage_top + k * args.stage_gap
-        blk = Block(args.window, small_scale, args.ve, zb_small, sx, stage_y)
+        bx = m + args.left_col + k * (row_w + gap)
+        blk = Block(args.window, small_scale, args.ve, zb_small, bx, args.stage_base)
         surface(svg, None, L["surf"], blk, top_surface, args.small_rows, line_w=0.05)
         faces(svg, L, blk, plain, top_surface, args.z_top, label=False, seed=10 + k)
         svg.layer(L["above"])
@@ -242,10 +243,12 @@ def build(args):
             for j in range(7):
                 yy = min(Ya, Yb) - 1.5 - j * 2.6
                 svg.line(Xa - 2, yy, Xb + 2, yy, stroke=INK, stroke_width=0.06, opacity=0.8 - 0.08 * j)
-        # Callout from the block's back-right edge, halfway up its face.
-        zt = float(top_surface[0, -1])
-        tx_, ty_ = blk.P(blk.r0, blk.c1, (zt + zb_small) / 2)
-        callout(f"{num} · {text}", right_x, float(ty_), float(tx_), "right", args.right_wrap)
+        # Label under the block, from its left edge; a straight vertical line
+        # from the middle of the block's front face down to the label.
+        cx_ = bx + sw / 2
+        callout(f"{num} · {text}", bx, label_y, cx_, "below", args.stage_wrap)
+        svg.layer(L["leaders"])
+        svg.line(cx_, args.stage_base + 1.0, cx_, label_y - 3.0, stroke=INK, stroke_width=0.06)
 
     # ------------------------------------------------------------ the block today
     s = s_big
@@ -291,17 +294,17 @@ def main():
     ap.add_argument("--dam-row", type=int, default=2135)
     ap.add_argument("--dam-cols", type=int, nargs=2, default=[1255, 1595])
     ap.add_argument("--water-below", type=float, default=223.2)
-    ap.add_argument("--scale", type=int, default=3000)
-    ap.add_argument("--small-scale", type=int, default=12500)
+    ap.add_argument("--scale", type=int, default=2500)
+    ap.add_argument("--small-scale", type=int, default=10000)
     ap.add_argument("--ve", type=float, default=8.0, help="vertical exaggeration")
     ap.add_argument("--z-top", type=float, default=240.0)
     ap.add_argument("--z-bottom", type=float, default=195.0)
     ap.add_argument("--left-col", type=float, default=96.0, help="mm of label column left of the large block")
-    ap.add_argument("--right-col", type=float, default=58.0, help="mm of label column right of the stage blocks")
     ap.add_argument("--left-wrap", type=int, default=44, help="characters per line, left labels")
-    ap.add_argument("--right-wrap", type=int, default=30, help="characters per line, right labels")
-    ap.add_argument("--stage-top", type=float, default=205.0, help="mm: base of the first stage block")
-    ap.add_argument("--stage-gap", type=float, default=150.0, help="mm between stage blocks")
+    ap.add_argument("--stage-wrap", type=int, default=46, help="characters per line, stage labels")
+    ap.add_argument("--stage-base", type=float, default=548.0, help="mm: front-bottom edge of the stage blocks")
+    ap.add_argument("--stage-label-gap", type=float, default=12.0, help="mm from the stage blocks to their labels")
+    ap.add_argument("--big-base", type=float, default=410.0, help="mm: front-bottom edge of the large block")
     ap.add_argument("--rows-step", type=int, default=8, help="m between surface profiles (large block)")
     ap.add_argument("--small-rows", type=int, default=30)
     ap.add_argument("--fill-m", type=int, default=400, help="m width bridged when filling the valley")
