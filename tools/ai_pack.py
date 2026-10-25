@@ -178,6 +178,67 @@ def layers(root):
     return [g for g in root if g.tag == T("g") and g.get(GROUPMODE) == "layer"]
 
 
+def render_layers(root, group, tmp, box, px_per_mm, opaque):
+    """Render layer elements `group` over box (x0, y0, x1, y1 mm). Returns
+    the PNG path and its pixel size."""
+    x0, y0, x1, y1 = box
+    wpx, hpx = int(np.ceil((x1 - x0) * px_per_mm)), int(np.ceil((y1 - y0) * px_per_mm))
+    doc = ET.Element(T("svg"), {"width": f"{wpx}px", "height": f"{hpx}px",
+                                "viewBox": f"{x0:.4f} {y0:.4f} {wpx / px_per_mm:.4f} {hpx / px_per_mm:.4f}"})
+    defs = root.find(T("defs"))
+    if defs is not None:
+        doc.append(copy.deepcopy(defs))
+    if opaque:
+        ET.SubElement(doc, T("rect"), {"x": str(x0 - 1), "y": str(y0 - 1), "width": str(x1 - x0 + 2),
+                                       "height": str(y1 - y0 + 2), "fill": "#ffffff"})
+    for g in group:
+        doc.append(copy.deepcopy(g))
+    src, png, js = (os.path.join(tmp, n) for n in ("flat.svg", "flat.png", "render.js"))
+    ET.ElementTree(doc).write(src, encoding="utf-8", xml_declaration=False)
+    with open(js, "w") as f:
+        f.write(RENDER_JS)
+    subprocess.run(["node", js, src, png, str(wpx), str(hpx)], check=True)
+    return png, (wpx, hpx)
+
+
+def flatten(root, prefix, dpi, tmp, w_mm, h_mm):
+    """Replace every layer whose label starts with prefix by one layer holding
+    a single opaque image of them, rendered exactly as the browser and PDF
+    draw them (blurs included). Returns the new layer's label, or None."""
+    from PIL import Image
+    group = [g for g in layers(root) if g.get(LABEL, "").startswith(prefix)]
+    if not group:
+        return None
+    # Where they actually show (clips applied): a quick pass at 4 px/mm.
+    png, _ = render_layers(root, group, tmp, (0, 0, w_mm, h_mm), 4, False)
+    alpha = np.asarray(Image.open(png).convert("RGBA"))[..., 3]
+    ys, xs = np.nonzero(alpha)
+    box = (max(0.0, xs.min() / 4 - 1), max(0.0, ys.min() / 4 - 1),
+           min(w_mm, (xs.max() + 1) / 4 + 1), min(h_mm, (ys.max() + 1) / 4 + 1))
+    px = dpi / 25.4
+    png, size = render_layers(root, group, tmp, box, px, True)
+    im = np.asarray(Image.open(png).convert("RGB"))
+    if np.ptp(im.astype(int), axis=2).max() <= 2:
+        Image.fromarray(im[..., 0], "L").save(png, optimize=True)
+    else:
+        Image.fromarray(im, "RGB").save(png, optimize=True)
+    with open(png, "rb") as f:
+        data = base64.b64encode(f.read()).decode()
+    label = f"{prefix} · IMAGE, {dpi:.0f} DPI (ALL ITS LAYERS)"
+    lid = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_")
+    layer = ET.Element(T("g"), {"id": lid, GROUPMODE: "layer", LABEL: label})
+    layer.text = "\n"
+    layer.tail = "\n"
+    ET.SubElement(layer, T("image"), {
+        "x": f"{box[0]:.3f}", "y": f"{box[1]:.3f}", "width": f"{size[0] / px:.3f}", "height": f"{size[1] / px:.3f}",
+        "preserveAspectRatio": "none", f"{{{XLINK_NS}}}href": "data:image/png;base64," + data}).tail = "\n"
+    i = list(root).index(group[0])
+    for g in group:
+        root.remove(g)
+    root.insert(i, layer)
+    return label, size
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src", nargs="+")
@@ -185,6 +246,8 @@ def main():
     ap.add_argument("--dpi", type=float, default=600)
     ap.add_argument("--chunk", type=int, default=2000, help="most subpaths per path")
     ap.add_argument("--max-anchors", type=int, default=6000, help="most anchors per path")
+    ap.add_argument("--flatten", nargs="*", default=["WIND PLAN", "WIND ROSE"],
+                    help="layer-name prefixes drawn as one opaque image each (vector copies go to parts/vector)")
     a = ap.parse_args()
     for src in a.src:
         name = os.path.splitext(os.path.basename(src))[0]
@@ -193,6 +256,21 @@ def main():
         tree = ET.parse(src)
         root = tree.getroot()
         w_mm, h_mm = (float(v) for v in root.get("viewBox").split()[2:])
+        vec = os.path.join(out, "parts", "vector")
+        with tempfile.TemporaryDirectory() as tmp:
+            for prefix in a.flatten:
+                originals = [copy.deepcopy(g) for g in layers(root) if g.get(LABEL, "").startswith(prefix)]
+                done = flatten(root, prefix, a.dpi, tmp, w_mm, h_mm)
+                if not done:
+                    continue
+                os.makedirs(vec, exist_ok=True)
+                doc = ET.Element(root.tag, dict(root.attrib))
+                if root.find(T("defs")) is not None:
+                    doc.append(copy.deepcopy(root.find(T("defs"))))
+                doc.extend(originals)
+                fn = re.sub(r"[^A-Za-z0-9]+", "_", prefix).strip("_").lower() + "_vector.svg"
+                ET.ElementTree(doc).write(os.path.join(vec, fn), encoding="utf-8", xml_declaration=False)
+                print(f"  {name}: {prefix} -> {done[1][0]}x{done[1][1]} px image", file=sys.stderr)
         parents = {c: p for p in root.iter() for c in p}
         blurred = [e for e in root.iter() if e.get("filter")]
         with tempfile.TemporaryDirectory() as tmp:
