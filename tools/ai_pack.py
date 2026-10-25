@@ -3,7 +3,7 @@
 Illustrator struggles with three things these sheets have a lot of:
 
   - SVG blur filters, which it keeps as live effects and re-renders on every
-    redraw. Each blurred group becomes a 300 dpi image of itself (the blur is
+    redraw. Each blurred group becomes a 600 dpi image (300 dpi at least for the largest) of itself (the blur is
     already soft, so nothing is lost at print size), in the same layer, under
     the same clip and opacity.
   - Compound paths with tens of thousands of subpaths (the stipple dots) or
@@ -77,7 +77,7 @@ def bbox(el):
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def rasterize(root, el, dpi, tmp, w_mm, h_mm):
+def rasterize(root, el, dpi, tmp, w_mm, h_mm, max_px=60e6):
     """A PNG <image> standing in for blurred element el."""
     std = 0.0
     fid = re.search(r"#([^)]+)", el.get("filter")).group(1)
@@ -89,8 +89,8 @@ def rasterize(root, el, dpi, tmp, w_mm, h_mm):
     x0, y0 = max(0.0, x0 - pad), max(0.0, y0 - pad)
     x1, y1 = min(w_mm, x1 + pad), min(h_mm, y1 + pad)
     # Snap to whole pixels so the image sits exactly where the vector was.
-    # Resolution follows the blur: at least 3 px per standard deviation, up to dpi.
-    dpi = min(dpi, max(150.0, 3 * 25.4 / std)) if std else dpi
+    # Full resolution unless the image would be very large; never under 300 dpi.
+    dpi = max(300.0, min(dpi, 25.4 * np.sqrt(max_px / ((x1 - x0) * (y1 - y0)))))
     px = dpi / 25.4
     wpx, hpx = int(np.ceil((x1 - x0) * px)), int(np.ceil((y1 - y0) * px))
     x1, y1 = x0 + wpx / px, y0 + hpx / px
@@ -182,7 +182,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("src", nargs="+")
     ap.add_argument("--out", default="outputs/illustrator")
-    ap.add_argument("--dpi", type=float, default=300)
+    ap.add_argument("--dpi", type=float, default=600)
     ap.add_argument("--chunk", type=int, default=2000, help="most subpaths per path")
     ap.add_argument("--max-anchors", type=int, default=6000, help="most anchors per path")
     a = ap.parse_args()
