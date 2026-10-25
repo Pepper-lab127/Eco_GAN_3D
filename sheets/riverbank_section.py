@@ -27,7 +27,7 @@ import os
 import numpy as np
 from scipy import ndimage
 
-from drawing import climate, flora, geology, hydrometric, terrain, trees, wind
+from drawing import climate, flora, geology, hydrometric, rocks, roots as rootsys, terrain, trees, wind
 from drawing.keyplan import key_plan
 from drawing.section import Section, datum_grid, profile
 from sheets.calendar_cut import true_north_angle
@@ -47,21 +47,6 @@ def crown_tops(height, min_height, spacing):
         if all(abs(i - j) >= spacing for j in tops):
             tops.append(int(i))
     return sorted(tops)
-
-
-def roots(rng, x, z, depth, spread, level=0, max_level=4):
-    """Branching root DIAGRAM: list of (x0, z0, x1, z1, level) segments."""
-    segs = []
-    n = 3 if level == 0 else 2
-    for k in range(n):
-        ang = (k - (n - 1) / 2) * (1.1 if level == 0 else 0.8) + rng.normal(0, 0.25)
-        length = (depth if level == 0 else depth * 0.6) * rng.uniform(0.6, 1.0)
-        x1 = x + math.sin(ang) * spread / (level + 1) * rng.uniform(0.5, 1.0)
-        z1 = z - abs(math.cos(ang)) * length
-        segs.append((x, z, x1, z1, level))
-        if level < max_level:
-            segs += roots(rng, x1, z1, depth * 0.55, spread * 0.7, level + 1, max_level)
-    return segs
 
 
 def dots(svg, layer, xs, ys, sizes_mm, tier, op, clip=None, streak=None):
@@ -118,10 +103,14 @@ def wind_plan(svg, L, dtm, dsm, hourly, rng, x0, y0, args, tiers, north=0.0):
     # River, canopy edge, the cut.
     svg.layer(L["plan_lines"])
     svg.open_group(clip_path=clip)
-    water = ndimage.binary_opening(g < args.plan_water, iterations=2)
-    lab, nlab = ndimage.label(water)
-    if nlab:
-        water = lab == np.argmax(np.bincount(lab.ravel())[1:]) + 1
+    if r0 < args.dam_row < r1:
+        _, wu, wd = terrain.river_reaches(dtm[r0:r1, c0:c1], args.dam_row - r0, 223.2)
+        water = (wu | wd)[::st, ::st]
+    else:
+        water = ndimage.binary_opening(g < args.plan_water, iterations=2)
+        lab, nlab = ndimage.label(water)
+        if nlab:
+            water = lab == np.argmax(np.bincount(lab.ravel())[1:]) + 1
     for ln_ in terrain.mask_lines(water):
         svg.path(points_to_path(x0 + ln_[:, 0] * st * s_, y0 + ln_[:, 1] * st * s_), fill="none", stroke=INK,
                  stroke_width=0.12)
@@ -129,6 +118,10 @@ def wind_plan(svg, L, dtm, dsm, hourly, rng, x0, y0, args, tiers, north=0.0):
         if len(ln_) > 6:
             svg.path(points_to_path(x0 + ln_[:, 0] * st * s_, y0 + ln_[:, 1] * st * s_), fill="none", stroke=INK,
                      stroke_width=0.05, opacity=0.6)
+    if r0 < args.dam_row < r1:
+        yd = y0 + (args.dam_row - r0) * s_
+        svg.line(x0 + (args.dam_cols[0] - c0) * s_, yd, x0 + (args.dam_cols[1] - c0) * s_, yd, stroke=INK,
+                 stroke_width=0.35)
     yc = y0 + (args.row - r0) * s_
     svg.line(x0 + (args.cols[0] - c0) * s_, yc, x0 + (args.cols[1] - c0) * s_, yc, stroke=INK, stroke_width=0.3,
              stroke_dasharray="2 0.6 0.4 0.6")
@@ -139,8 +132,8 @@ def wind_plan(svg, L, dtm, dsm, hourly, rng, x0, y0, args, tiers, north=0.0):
     svg.text(x0 + (args.cols[1] - c0) * s_ + 1.5, yc + 0.8, "B′", size=2.4, fill=INK)
     svg.text(x0, y0 - 2.5, f"WIND AT 2 M · 1:{args.wind_scale:,}", size=2.0, fill=INK, spacing=0.25)
     svg.layer(L["scale"])
-    scale_bar(svg, x0, y0 + H + 3, 100 * s_, 100, "m", color=INK)
-    north_arrow(svg, x0 + 100 * s_ + 12, y0 + H + 3.5, r=2.5, color=INK, angle=north)
+    scale_bar(svg, x0, y0 + H + 3, 200 * s_, 200, "m", color=INK)
+    north_arrow(svg, x0 + 200 * s_ + 12, y0 + H + 3.5, r=2.5, color=INK, angle=north)
     return W
 
 
@@ -256,7 +249,8 @@ def build(args):
              flora_stems="GROUND LAYER · STEMS AND BLADES · 0.05 mm",
              flora_leaves="GROUND LAYER · LEAVES, FLOWERS, BERRIES · 0.1–0.25 mm",
              flora_band="GROUND LAYER · ZONES BELOW THE SECTION · 0.08 mm", tree_leaves="TREES · LEAVES, STIPPLE · 0.15–0.22 mm",
-             roots="ROOTS (DIAGRAM) · 0.05–0.2 mm", ground="GROUND (LIDAR) · 0.3 mm",
+             roots="ROOTS BY SPECIES · 0.03–0.55 mm", water_table="WATER TABLE (ASSUMED), DASHED · 0.06 mm",
+             stones="SHORE STONES · OUTLINES · 0.08 mm", stone_marks="SHORE STONES · BEDDING, MOTTLES, SPECKLE, BANDS", ground="GROUND (LIDAR) · 0.3 mm",
              key_lines="KEY PLAN · RIVER, VALLEY EDGE, DAM · 0.06–0.35 mm", key_cut="KEY PLAN · CUT LINE · 0.3 mm",
              scale="SCALE BAR", text="TEXT")
     for name in L.values():
@@ -407,14 +401,37 @@ def build(args):
                                     spacing=args.flora_spacing, shrub_every=args.shrub_every, ink=INK)
     flora_band(svg, L, sec, flora_placed, moisture, light, shore, width, args)
 
-    # Roots: diagram, depth and spread from each tree's height and species.
-    svg.layer(L["roots"])
-    for i, sp, _, _ in placed:
-        dmul, smul = trees.SPECIES[sp]["root"]
-        for x0_, z0_, x1_, z1_, lvl in roots(rng, i + 0.5, ground[i], min(3.5, height[i] * 0.15 * dmul),
-                                             height[i] * 0.45 * smul):
-            svg.line(sec.X(x0_), sec.Y(z0_), sec.X(x1_), sec.Y(z1_), stroke=INK,
-                     stroke_width=round(0.2 * 0.6 ** lvl, 3), opacity=0.8)
+    # Roots by species, as deep as the ground above the water table allows
+    # (water table assumed: the median open-water level at the shore, rising
+    # gently inland), never into the shale.
+    z_med_ = float(np.median(levels))
+
+    def ground_at(x):
+        return float(np.interp(x, ch + 0.5, ground))
+
+    def water_table_at(x):
+        return min(z_med_ + args.wt_slope * max(0.0, x - shore), ground_at(x) - 0.3)
+
+    geo_tops = geology.interfaces(np.arange(*args.cols), lambda c: float(dtm[args.row, int(c)]))
+
+    def floor_at(x):
+        return float(np.interp(x, ch + 0.5, geo_tops["shale"]))
+
+    root_rng = np.random.default_rng(args.seed + 23)
+    all_roots, shoots = [], []
+    for i, sp, _, crown_m in placed:
+        rs = rootsys.system(sp, root_rng, i + 0.5, ground_at, height[i], crown_m / 2, water_table_at, floor_at)
+        all_roots += rs
+        if sp == "aspen":
+            shoots += rootsys.suckers(root_rng, rs, ground_at)
+    rootsys.draw(svg, L["roots"], sec, all_roots, ink=INK)
+    for x_, g_, h_ in shoots:
+        trees.draw(svg, dict(wood=L["tree_wood"], twigs=L["tree_twigs"], leaves=L["tree_leaves"]), "aspen",
+                   sec.X(x_), sec.Y(g_), h_ * sec.sv, h_ * 0.5 * sec.sh, root_rng, ink=INK)
+    svg.layer(L["water_table"])
+    xs_wt = np.arange(shore, width, 1.0)
+    svg.path(sec.path(xs_wt, [water_table_at(x) for x in xs_wt]), fill="none", stroke=INK, stroke_width=0.06,
+             stroke_dasharray="0.8 0.8", opacity=0.6)
 
     svg.layer(L["ground"])
     svg.path(sec.path(ch, ground), fill="none", stroke=INK, stroke_width=0.3, stroke_linejoin="round")
@@ -464,6 +481,16 @@ def build(args):
                  stroke_dasharray="1.2 0.5")
     geology.draw_layers(svg, sec, ch, cols, ground, lambda c: float(dtm[args.row, int(c)]), args.z_bottom, INK,
                         weight=0.08, top_cap=bed_cap, layer_names={k: L[f"geo_{k}"] for k in geology.LAYERS})
+    # Stones on the shore: a lag of limestone slabs from the rapids' ledges and
+    # carbonate, granite and gneiss stones washed out of the till, from below
+    # low water up to the reach of the spring ice (highest April level).
+    surface = np.where(river & np.isfinite(bed_row), bed_row, ground)
+    april = [z for d, z in zip(dl, lv) if z == z and d.month == 4]
+    ice_reach = max(april) if april else z_med + 1.5
+    stone_counts = rocks.shore(svg, dict(stones=L["stones"], marks=L["stone_marks"]), sec, ch + 0.5, surface,
+                               float(np.min(levels)) - args.stones_below, ice_reach, np.random.default_rng(args.seed + 31),
+                               per_m=args.stones_per_m, ink=INK)
+    print("stones:", stone_counts, "ice reach", round(ice_reach, 2))
     svg.layer(L["text"])
 
     tx, ty = m + 8, m + 12
@@ -555,10 +582,10 @@ def main():
     ap.add_argument("--blur", type=float, nargs=2, default=[0.25, 0.7], help="blur (mm) of the two windier tiers")
     ap.add_argument("--near-density", type=float, default=1.6,
                     help="density of the bank's air points relative to the sky band")
-    ap.add_argument("--wind-window", type=int, nargs=4, default=[1640, 2040, 1260, 2060],
+    ap.add_argument("--wind-window", type=int, nargs=4, default=[1440, 2240, 814, 2414],
                     metavar=("ROW0", "ROW1", "COL0", "COL1"), help="DEM area of the wind plan")
-    ap.add_argument("--wind-cell", type=int, default=2, help="m per cell of the wind plan model")
-    ap.add_argument("--wind-scale", type=int, default=2500)
+    ap.add_argument("--wind-cell", type=int, default=4, help="m per cell of the wind plan model")
+    ap.add_argument("--wind-scale", type=int, default=5000)
     ap.add_argument("--plan-density", type=float, default=0.9, help="candidate wind-plan dots per mm²")
     ap.add_argument("--plan-streak", type=float, default=0.045, help="mm of streak per km/h in the wind plan")
     ap.add_argument("--plan-water", type=float, default=218.4, help="lidar ground below this is river in the wind plan")
@@ -567,6 +594,9 @@ def main():
     ap.add_argument("--flora-spacing", type=float, default=0.3, help="m between ground-layer plants")
     ap.add_argument("--shrub-every", type=float, default=4.0, help="m between shrubs where they grow")
     ap.add_argument("--edge-m", type=int, default=6, help="m of open ground that makes a tree a woodland-margin tree")
+    ap.add_argument("--wt-slope", type=float, default=0.04, help="rise of the assumed water table per m inland")
+    ap.add_argument("--stones-below", type=float, default=0.8, help="m below the lowest open-water level stones reach")
+    ap.add_argument("--stones-per-m", type=float, default=4.0)
     ap.add_argument("--min-zone", type=int, default=5, help="m; shorter zone stretches fold into their neighbour")
     ap.add_argument("--min-tree", type=float, default=6.0, help="m canopy height counted as a tree top")
     ap.add_argument("--tree-spacing", type=int, default=6, help="m between tree tops")
