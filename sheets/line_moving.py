@@ -113,8 +113,8 @@ def cmip_delta(cmip_dir, run, X, Y, inv):
     deltas, models = [], []
     for m in sorted({os.path.basename(f).split("_")[0] for f in glob.glob(os.path.join(cmip_dir, "*_historical_*.npy"))}):
         load = lambda f: np.where(np.abs(np.load(f)) < 1e3, np.load(f), np.nan)   # ocean cells hold fill values
-        h = [load(f) for f in glob.glob(os.path.join(cmip_dir, f"{m}_historical_*.npy"))]
-        fu = [load(f) for f in glob.glob(os.path.join(cmip_dir, f"{m}_{run}_*.npy"))]
+        h = [load(f) for f in glob.glob(os.path.join(cmip_dir, f"{m}_historical_[0-9][0-9][0-9][0-9].npy"))]
+        fu = [load(f) for f in glob.glob(os.path.join(cmip_dir, f"{m}_{run}_[0-9][0-9][0-9][0-9].npy"))]
         if len(h) < 3 or len(fu) < 3:
             continue
         deltas.append(np.mean(fu, 0) - np.mean(h, 0))
