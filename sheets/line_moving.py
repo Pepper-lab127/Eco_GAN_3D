@@ -242,18 +242,33 @@ def build(args):
     band = unary_union([affinity.translate(pb_line, 0, dy).buffer(1) for dy in np.arange(150e3, 200e3 + 1, 2.5e3)])
     svg.layer(L["eco_est"])
     svg.open_group(clip_path=clip)
-    for dy in np.arange(150e3, 200e3 + 1, 5e3):
-        draw_geom(affinity.translate(pb_line, 0, dy), fill="none", stroke=INK, stroke_width=0.05,
-                  stroke_dasharray="0.6 0.9", opacity=0.55)
+    for dy in np.arange(155e3, 200e3, 5e3):
+        draw_geom(affinity.translate(pb_line, 0, dy), fill="none", stroke=INK, stroke_width=0.1,
+                  stroke_dasharray="0.25 1.1", stroke_linecap="round", opacity=0.75)
     for dy in (150e3, 200e3):
-        draw_geom(affinity.translate(pb_line, 0, dy), fill="none", stroke=INK, stroke_width=0.12,
-                  stroke_dasharray="1.6 1.0", opacity=0.7)
+        draw_geom(affinity.translate(pb_line, 0, dy), fill="none", stroke=INK, stroke_width=0.2,
+                  stroke_dasharray="2.0 1.0", opacity=0.9)
     svg.close_group()
+    # Labels at the line's west end (inside the frame).
+    def west_end(g):
+        pts = np.vstack([np.array(q.coords) for q in (g.geoms if hasattr(g, "geoms") else [g])
+                         if q.geom_type == "LineString"])
+        pts = pts[(pts[:, 0] > xa + 20e3) & (pts[:, 1] > ya) & (pts[:, 1] < yb)]
+        return pts[np.argmin(pts[:, 0])] if len(pts) else None
+    svg.layer(L["text"])
+    we = west_end(pb_line)
+    if we is not None:
+        svg.text(float(MX(we[0])) + 1.5, float(MY(we[1])) + 4.0, "PRAIRIE–BOREAL LINE (RESOLVE 2017)", size=1.8,
+                 fill=INK, spacing=0.2)
+    we = west_end(affinity.translate(pb_line, 0, 200e3))
+    if we is not None:
+        svg.text(float(MX(we[0])) + 1.5, float(MY(we[1])) - 1.8, "THE SAME LINE +150–200 KM · EST.", size=1.8,
+                 fill=INK, spacing=0.2, opacity=0.85)
 
     # ------------------------------------------------------------ water, borders
     svg.layer(L["water"])
     svg.open_group(clip_path=clip)
-    draw_geom(lakes_u, fill="#ffffff", stroke=INK, stroke_width=0.1)
+    draw_geom(lakes_u, fill="none", stroke=INK, stroke_width=0.1)
     svg.close_group()
     svg.layer(L["rivers"])
     svg.open_group(clip_path=clip)
@@ -313,7 +328,7 @@ def build(args):
 
     def north_of_lockport(F, level):
         """km north (or south, negative) of Lockport where the line crosses its meridian."""
-        lons = np.full(800, LOCKPORT[0]); lats = np.linspace(40.5, 62.5, 800)
+        lons = np.full(1200, LOCKPORT[0]); lats = np.linspace(38.0, 66.0, 1200)
         xs, ys = fwd.transform(lons, lats)
         f = interpolate.RegularGridInterpolator((gy, gx), F, bounds_error=False, fill_value=np.nan)
         v = f(np.c_[ys, xs])
@@ -350,8 +365,7 @@ def build(args):
     # The line.
     svg.layer(L["line"])
     svg.open_group(clip_path=clip)
-    series = [("1961–1990", F_then, dict(stroke_width=0.5)), ("1991–2020", F_now, dict(stroke_width=0.5,
-                                                                                      stroke_dasharray="4 0.8"))]
+    series = [("1961–1990", F_then, dict(stroke_width=0.5)), ("1991–2020", F_now, dict(stroke_width=0.25))]
     series += [(lab, F, sty) for lab, F, sty, _ in futures]
     marks = []
     for lab, F, sty in series:
@@ -362,15 +376,25 @@ def build(args):
     svg.close_group()
     # Labels where each line crosses Lockport's meridian.
     svg.layer(L["text"])
+    off = []
     for lab, km, lat_c in marks:
         if lat_c is None:
+            off.append(f"{lab} · BEYOND 66° N")
             continue
         x, y = fwd.transform(LOCKPORT[0], lat_c)
         if not (ya < y < yb):
+            off.append(f"{lab} · {km:+.0f} KM, AT {lat_c:.1f}° N")
             continue
-        t = lab if abs(km) < 5 else f"{lab} · {km:+.0f} KM"
         svg.circle(float(MX(x)), float(MY(y)), 0.6, fill=INK, stroke="none")
-        svg.text(float(MX(x)) + 2.0, float(MY(y)) - 1.0, t, size=1.9, fill=INK, spacing=0.15)
+        if abs(km) < 5:
+            svg.text(float(MX(x)) + 2.0, float(MY(y)) + 4.2, lab, size=1.9, fill=INK, spacing=0.15)
+        else:
+            svg.text(float(MX(x)) + 2.0, float(MY(y)) - 1.0, f"{lab} · {km:+.0f} KM", size=1.9, fill=INK, spacing=0.15)
+    # Lines that have left the map: noted at the top edge, above Lockport's meridian.
+    for k, t in enumerate(off):
+        x0 = float(MX(lx))
+        svg.text(x0 + 2.0, oy + 4.5 + k * 2.8, f"↑ {t} (OFF THE MAP)", size=1.8, fill=INK, spacing=0.15)
+    print("off the map:", off)
     # Where Lockport's future winters are today: the 1991-2020 line at each projected value.
     svg.layer(L["analog"])
     svg.open_group(clip_path=clip)
