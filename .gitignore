@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 outputs/
 checkpoints/
+
+# NOAA GHCN-Daily catalogues (re-downloadable, large)
+data/region/ghcn/ghcnd-*.txt
