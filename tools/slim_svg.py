@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-TOK = re.compile(r"[MmLlHhVvQqZz]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?")
+TOK = re.compile(r"[MmLlHhVvQqCcZz]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?")
 D_ATTR = re.compile(r'(\sd=")([^"]*)(")')
 
 
@@ -88,6 +88,12 @@ def parse(d):
                 x1, y1, x, y = cx + x1, cy + y1, cx + x, cy + y
             cur[1].append(("Q", [(x1, y1), (x, y)]))
             cx, cy = x, y
+        elif c == "C":
+            x1, y1, x2, y2, x, y = num(), num(), num(), num(), num(), num()
+            if rel:
+                x1, y1, x2, y2, x, y = cx + x1, cy + y1, cx + x2, cy + y2, cx + x, cy + y
+            cur[1].append(("C", [(x1, y1), (x2, y2), (x, y)]))
+            cx, cy = x, y
     return subs
 
 
@@ -139,7 +145,7 @@ class Writer:
         # A separator is needed unless the number starts with '-', or with
         # '.' after a number that already has a decimal point.
         prev = self.out[-1] if self.out else ""
-        if prev and prev[-1] not in "MmLlHhVvQqZz" and s[0] != "-":
+        if prev and prev[-1] not in "MmLlHhVvQqCcZz" and s[0] != "-":
             self.out.append(" ")
         self.out.append(s)
 
@@ -188,10 +194,15 @@ def write(subs, tol):
                     else:
                         w.cmd("l", dx, dy)
                     w.px, w.py = nx, ny
-            else:
+            elif kind == "Q":
                 (x1, y1), (x, y) = pts
                 a, b, nx, ny = q(x1), q(y1), q(x), q(y)
                 w.cmd("q", a - w.px, b - w.py, nx - w.px, ny - w.py)
+                w.px, w.py = nx, ny
+            else:
+                (x1, y1), (x2, y2), (x, y) = pts
+                a, b, c2, d2, nx, ny = q(x1), q(y1), q(x2), q(y2), q(x), q(y)
+                w.cmd("c", a - w.px, b - w.py, c2 - w.px, d2 - w.py, nx - w.px, ny - w.py)
                 w.px, w.py = nx, ny
         if closed:
             w.cmd("z")
@@ -204,6 +215,8 @@ def slim(text, tol=0.01):
 
     def sub(m):
         d = m.group(2)
+        if re.search(r"[AaSsTt]", d):            # commands not handled: leave the path as it is
+            return m.group(0)
         subs = parse(d)
         nd = write(subs, tol)
         stats["before"] += len(TOK.findall(d))
