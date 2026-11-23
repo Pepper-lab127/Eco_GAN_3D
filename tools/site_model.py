@@ -561,7 +561,30 @@ def build(a):
     json.dump(dict(window_rows_cols=a.window, scale=a.scale, card_mm=a.card, model_mm=[W, H], tiles=a.tiles,
                    layers=len(layers), pieces=len(pieces), sheets=len(sheets), z_base=z_base),
               open(os.path.join(out, "model.json"), "w"), indent=1)
+    write_layers_dxf(os.path.join(out, "lockport_contour_layers.dxf"), layers, W, H, a.card)
     return layers, pieces, bld, wood, W, H
+
+
+def write_layers_dxf(path, layers, W, H, card):
+    """Every terrain layer's outline in one DXF, model mm, y up (north), all lines black.
+    Each layer is its own DXF layer (L00_218m ...), and its polylines sit at that layer's
+    height (k x card), so the file reads as a plan and stacks in 3D."""
+    import ezdxf
+    doc = ezdxf.new(units=4)
+    black = ezdxf.colors.rgb2int((0, 0, 0))
+    msp = doc.modelspace()
+    doc.layers.add("MODEL_EDGE", true_color=black)
+    msp.add_lwpolyline([(0, 0), (W, 0), (W, H), (0, H)], close=True,
+                       dxfattribs={"layer": "MODEL_EDGE", "true_color": black})
+    for L in layers:
+        name = f"L{L['k']:02d}_{L['z']:.0f}m"
+        doc.layers.add(name, true_color=black)
+        for p in parts(L["g"]):
+            for ring in [p.exterior] + list(p.interiors):
+                pts = [(x, H - y) for x, y in ring.coords]
+                msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": name, "true_color": black,
+                                                                "elevation": L["k"] * card})
+    doc.saveas(path)
 
 
 def main():
