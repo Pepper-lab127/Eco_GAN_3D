@@ -267,7 +267,9 @@ def build(a):
           f"({sum(b['src'] == 'overture' for b in bld)} heights from Overture, {sum(b['src'] == 'lidar' for b in bld)} from lidar)")
 
     infra = load("infrastructure")
-    bridge = [lonlat_to_mm(shape(f["geometry"])) for f in infra if f["properties"].get("subtype") == "bridge"]
+    bridge = [lonlat_to_mm(shape(f["geometry"])).intersection(frame) for f in infra
+              if f["properties"].get("subtype") == "bridge"]
+    bridge = [g for g in bridge if g.geom_type == "LineString" and g.length > 20 * mm]
     weirs = [(((f["properties"].get("names") or {}) or {}).get("primary"), lonlat_to_mm(shape(f["geometry"])))
              for f in infra if f["properties"].get("class") == "weir"]
     deck_line = max(bridge, key=lambda g: g.length) if bridge else None
@@ -300,6 +302,8 @@ def build(a):
         if not wl.intersects(frame):
             continue
         wl = wl.intersection(frame)
+        if wl.geom_type != "LineString" or wl.length < 5 * mm:
+            continue
         if (name or "").startswith("St. Andrews") and deck_line is not None:
             zw = float(np.median([z_at(*c) for c in wl.coords]))
             wood.append(dict(name="S2 DAM CURTAIN WALL", g=wl.buffer(0.6 * mm, cap_style="flat"), z_bottom=zw, elevation=True,
