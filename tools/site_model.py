@@ -581,7 +581,7 @@ def write_layers_dxf(path, layers, W, H, card):
     msp.add_lwpolyline([(0, 0), (W, 0), (W, H), (0, H)], close=True,
                        dxfattribs={"layer": "MODEL_EDGE", "true_color": black})
     for L in layers:
-        name = f"L{L['k']:02d}_{L['z']:.0f}m"
+        name = f"L{L['k']:02d}_{L['z']:g}m".replace('.', '_')
         doc.layers.add(name, true_color=black)
         for p in parts(L["g"]):
             for ring in [p.exterior] + list(p.interiors):
