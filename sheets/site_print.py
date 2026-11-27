@@ -230,8 +230,9 @@ def build(a):
             svg.line(cx, cy, cx + sx * tick, cy, stroke=INK, stroke_width=0.25)
             svg.line(cx, cy, cx, cy + sy * tick, stroke=INK, stroke_width=0.25)
         svg.layer(L["text"])
-        svg.rect(x, y - 9.5, 4.5 + len(title) * 2.0 + 60, 7.5, fill="#ffffff", stroke="none", opacity=0.85)
-        svg.text(x + 2, y - 3.6, f"{key} · {title} · MODEL {w:.0f} × {h:.0f} MM", size=3.2, fill=INK, spacing=0.4)
+        if a.rect_titles:
+            svg.rect(x, y - 9.5, 4.5 + len(title) * 2.0 + 60, 7.5, fill="#ffffff", stroke="none", opacity=0.85)
+            svg.text(x + 2, y - 3.6, f"{key} · {title} · MODEL {w:.0f} × {h:.0f} MM", size=3.2, fill=INK, spacing=0.4)
 
     svg.layer(L["frame"])
     svg.rect(ox, oy, W, H, fill="none", stroke=INK, stroke_width=0.2)
@@ -283,6 +284,7 @@ def main():
     ap.add_argument("--wind-streak", type=float, default=0.12)
     ap.add_argument("--model-base", type=float, default=218.0)
     ap.add_argument("--layer-m", type=float, default=1.5)
+    ap.add_argument("--rect-titles", type=int, default=1, help="0: no titles above the model rectangles")
     ap.add_argument("--out", default="outputs/sheets/11_site_print.svg")
     build(ap.parse_args())
 
