@@ -17,6 +17,7 @@ def main():
     ap.add_argument("--ve", type=float, default=4.0)
     ap.add_argument("--zoom", type=float, default=2.0)
     ap.add_argument("--title", default="")
+    ap.add_argument("--dark", action="store_true", help="dark grey blocks on white, as in the collage prints")
     a = ap.parse_args()
     V, objs, cur = [], {}, None
     for line in open(a.obj):
@@ -32,7 +33,7 @@ def main():
     X = (V[:, 0] - V[:, 1] * 0.35) * k
     Y = (-V[:, 1] * 0.55 - V[:, 2] * a.ve - V[:, 0] * 0.12) * k
     ox, oy = -X.min() + 40, -Y.min() + 60
-    im = Image.new("RGB", (int(X.max() + ox + 40), int(Y.max() + oy + 40)), (250, 250, 248))
+    im = Image.new("RGB", (int(X.max() + ox + 40), int(Y.max() + oy + 40)), (255, 255, 255) if a.dark else (250, 250, 248))
     d = ImageDraw.Draw(im)
 
     def poly(ids, fill):
@@ -45,9 +46,19 @@ def main():
             continue
         if n == "roads":
             for _, ids in objs[n]:
-                d.line([(X[i - 1] + ox, Y[i - 1] + oy) for i in ids], fill=(70, 70, 70), width=1)
+                d.line([(X[i - 1] + ox, Y[i - 1] + oy) for i in ids], fill=(230, 230, 230) if a.dark else (70, 70, 70),
+                       width=1)
             continue
-        if n.startswith("card_layer"):
+        if a.dark:
+            if n.startswith("card_layer"):
+                kk = int(n[-2:])
+                g = int(95 + kk * 4)
+                top, side = (g, g, g), (g - 35, g - 35, g - 35)
+            elif n == "base_board":
+                top, side = (70, 70, 70), (45, 45, 45)
+            else:
+                top, side = (185, 185, 185), (120, 120, 120)
+        elif n.startswith("card_layer"):
             kk = int(n[-2:])
             g = int(200 + kk * 2.8)
             top, side = (g, g - 8, g - 25), (g - 60, g - 70, g - 85)
@@ -64,8 +75,12 @@ def main():
             for ids in tris:
                 if abs(V[ids[0] - 1][2] - zmax) < 1e-6 or n.startswith("wood"):
                     poly(ids, top)
-    d.text((40, 20), f"{a.title}  -  preview, heights x{a.ve:g} so the layers read (the model is true scale)",
-           fill=(30, 30, 30))
+    if a.title:
+        d.text((40, 20), f"{a.title}  -  preview, heights x{a.ve:g} so the layers read (the model is true scale)",
+               fill=(30, 30, 30))
+    bb = Image.eval(im.convert("L"), lambda v: 255 - v).getbbox()
+    if bb:
+        im = im.crop((max(bb[0] - 10, 0), max(bb[1] - 10, 0), bb[2] + 10, bb[3] + 10))
     im.save(a.png)
 
 

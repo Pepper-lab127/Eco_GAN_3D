@@ -158,6 +158,12 @@ def build(args):
         lines = flowfield.stream_lines(day["u"], day["v"], day["fn"], day["wet"], args.per_line, st)
         day["lines"] = [(rr * st, cc * st, tt * st) for rr, cc, tt in lines]     # metres and seconds
         day["traced_q"] = len({round(float(np.median(cc)), -1) for _, cc, _ in lines})
+    if args.save_lines:
+        # Streamlines in absolute DEM rows / cols (1 m), for other sheets at other scales.
+        import json as _json
+        _json.dump({str(day["date"]): [[(r0 + np.asarray(rr_)).round(2).tolist(), (c0 + np.asarray(cc_)).round(2).tolist()]
+                                       for rr_, cc_, _ in day["lines"]] for day in days}, open(args.save_lines, "w"))
+        print(f"wrote {args.save_lines}")
 
     def draw_plan(day, x0, y0, rows, cols, scale, chevron_s, every, title=None, labels=True, bar=True):
         """One plan of a day: contours, streamlines, travel-time arrowheads, dam."""
@@ -405,6 +411,7 @@ def main():
     ap.add_argument("--annotate", action="store_true",
                     help="also print the title, notes, legend, sources and page border; the reading guide covers them")
     ap.add_argument("--out", default="outputs/sheets/01_velocity_field.svg")
+    ap.add_argument("--save-lines", help="also write the streamlines (DEM rows/cols) to this JSON")
     args = ap.parse_args()
     if args.label is None:
         args.label = [("LOCK", 2200, 1200, -90), ("FLOODWAY", 2750, 2470, -90), ("FLOODWAY OUTLET", 1330, 2080, 0)]
