@@ -173,7 +173,7 @@ def draw_layers(svg, sec, ch, cols, ground, ground_at, z_bottom, ink, seed=7, we
                ink, rng, weight)
         svg.close_group()
         # Boundary line along the layer's top where it lies below ground.
-        buried = np.where(tops[kind] < cap - 0.05, tops[kind], np.nan)
+        buried = np.where((tops[kind] < cap - 0.05) & (tops[kind] > z_bottom), tops[kind], np.nan)
         svg.path(points_to_path(X, sec.Y(buried)), fill="none", stroke=ink, stroke_width=weight * 1.5, opacity=0.9)
         if label:
             thick = upper - np.minimum(lower, upper)
