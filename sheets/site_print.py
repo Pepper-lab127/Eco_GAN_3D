@@ -256,7 +256,8 @@ def build(a):
     svg.line(cx, cy + rr * 0.8, cx, cy - rr * 1.6, stroke=INK, stroke_width=0.5)
     svg.layer(L["text"])
     svg.text(cx, cy - rr * 1.6 - 2.5, "N", size=3.4, fill=INK, anchor="middle")
-    svg.text(ox, base_y + 2, "LOCKPORT · THE THREE SITE MODELS IN PLACE · 1:500", size=4.4, fill=INK, spacing=0.5)
+    if a.sheet_title:
+        svg.text(ox, base_y + 2, "LOCKPORT · THE THREE SITE MODELS IN PLACE · 1:500", size=4.4, fill=INK, spacing=0.5)
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     svg.save(a.out)
     print(f"wrote {a.out}")
@@ -285,6 +286,7 @@ def main():
     ap.add_argument("--model-base", type=float, default=218.0)
     ap.add_argument("--layer-m", type=float, default=1.5)
     ap.add_argument("--rect-titles", type=int, default=1, help="0: no titles above the model rectangles")
+    ap.add_argument("--sheet-title", type=int, default=1, help="0: no title at bottom left")
     ap.add_argument("--out", default="outputs/sheets/11_site_print.svg")
     build(ap.parse_args())
 
